@@ -1,6 +1,9 @@
 # Metaclip Server
 
 ## Setup
+- Runs at http://localhost:8000/ (configurable)
+- Middleware (e.g. caddy, nginx) required for https, compression and reverse proxy (myserver.com -> localhost:8000).
+  
 **. . .**
 
 ## API Endpoints

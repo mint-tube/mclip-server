@@ -262,7 +262,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 @app.get("/")
 async def root():
     """Health check endpoint"""
-    return {"message": "Metaclip Server is running", "status": "healthy"}
+    return {"status": "healthy"}
 
 if __name__ == "__main__":
     make_dirs()
