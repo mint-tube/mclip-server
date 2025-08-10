@@ -1,0 +1,10 @@
+yourdomain.com { # <- OR plain ip (like 1.1.1.1)
+    # Reverse proxy to uvicorn
+    reverse_proxy localhost:8000 # <- port from config
+
+    # Automatic HTTPS
+    tls your@email.com
+
+    # Compression
+    encode gzip
+}

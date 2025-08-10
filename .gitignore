@@ -1,0 +1,7 @@
+data/
+caddy
+config
+
+.vscode
+.venv
+__pycache__
