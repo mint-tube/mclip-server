@@ -3,6 +3,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Resp
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List, Optional, Dict
+from base64 import b64decode, b64encode
 import sqlite3
 import json
 import uuid
@@ -72,31 +73,52 @@ class ConnectionManager:
         # Remove dead connections after iteration
         for dead_connection in dead_connections:
             self.active_connections.remove(dead_connection)
-
 manager = ConnectionManager()
-
-# API Endpoints for CRUD operations
 
 @app.post("/items")
 async def create_item(item: Item):
-    "Create a new item (text message or file metadata)"
+    "Create a new item"
 
     if item.type not in ['text', 'file']:
         raise HTTPException(status_code=422, detail="Type must be 'text' or 'file'")
     
-
     if item.type == 'text' and item.file_name:
         raise HTTPException(status_code=400, detail="Text items cannot have file_name")
+    
+    item_id = str(uuid.uuid4())
+
+    if item.type == 'file':
+        # For file items, content must be provided and file_name must be provided
+        if not item.content or not item.file_name:
+            raise HTTPException(status_code=400, detail="File items must have both content and file_name")
+        
+        # Decode base64 content to binary
+        try:
+            file_content = b64decode(item.content, validate=True)
+        except:
+            raise HTTPException(status_code=400, detail="File content must be valid base64")
+        
+        # Create file
+        file_path = os.path.join(files_dir, item_id)
+        
+        # Write file content
+        try:
+            with open(file_path, 'wb') as f:
+                f.write(file_content)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to write file: {str(e)}")
     
     conn = db()
     cursor = conn.cursor()
     
-    item_id = str(uuid.uuid4())
+    
+    # For file items, store only the filename in database, content is None
+    db_content = None if item.type == 'file' else item.content
     
     cursor.execute('''
         INSERT INTO items (id, type, content, file_name)
         VALUES (?, ?, ?, ?)
-    ''', (item_id, item.type, item.content, item.file_name))
+    ''', (item_id, item.type, db_content, item.file_name))
     
     conn.commit()
     conn.close()
@@ -112,7 +134,7 @@ async def create_item(item: Item):
 
 @app.get("/items", response_model=List[Item])
 async def get_items():
-    """Get all items with pagination"""
+    """Get all items"""
 
     conn = db()
     cursor = conn.cursor()
@@ -122,16 +144,32 @@ async def get_items():
     items = cursor.fetchall()
     conn.close()
     
-    return [Item(
-        id=item["id"],
-        type=item["type"],
-        content=item["content"],
-        file_name=item["file_name"]
-    ) for item in items]
+    result = []
+    for item in items:
+        if item["type"] == "file" and item["file_name"]:
+            # For file items, read the file content and encode as base64
+            file_path = os.path.join(files_dir, item["id"])
+            try:
+                with open(file_path, 'rb') as f:
+                    file_content = f.read()
+                content = b64encode(file_content).decode('utf-8')
+            except:
+                content = None
+        else:
+            content = item["content"]
+        
+        result.append(Item(
+            id=item["id"],
+            type=item["type"],
+            content=content,
+            file_name=item["file_name"]
+        ))
+    
+    return result
 
 @app.get("/items/{item_id}", response_model = Item)
 async def get_item(item_id: str):
-    """Get a specific item by ID"""
+    """Get an item by ID"""
     conn = db()
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM items WHERE id = ?", (item_id,))
@@ -141,24 +179,48 @@ async def get_item(item_id: str):
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
     
+    if item["type"] == "file" and item["file_name"]:
+        # For file items, read the file content and encode as base64
+        file_path = os.path.join(files_dir, item_id)
+        try:
+            with open(file_path, 'rb') as f:
+                file_content = f.read()
+            content = b64encode(file_content).decode('utf-8')
+        except:
+            content = None
+    else:
+        content = item["content"]
+    
     return Item(
         id=item["id"],
         type=item["type"],
-        content=item["content"],
+        content=content,
         file_name=item["file_name"]
     )
 
 @app.delete("/items/{item_id}")
 async def delete_item(item_id: str):
-    """Delete an item"""
+    """Delete an item by ID"""
     conn = db()
     cursor = conn.cursor()
     
-    # Check if item exists first
-    cursor.execute("SELECT id FROM items WHERE id = ?", (item_id,))
-    if not cursor.fetchone():
+    # Check if item exists and if it's a file
+    cursor.execute("SELECT type, file_name FROM items WHERE id = ?", (item_id,))
+    item_data = cursor.fetchone()
+    
+    if not item_data:
         conn.close()
         raise HTTPException(status_code=404, detail="Item not found")
+    
+    # If it's a file, delete the actual file
+    if item_data["type"] == "file" and item_data["file_name"]:
+        file_path = os.path.join(files_dir, item_id)
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except:
+            # Don't fail if file deletion fails, just log it
+            pass
     
     cursor.execute("DELETE FROM items WHERE id = ?", (item_id,))
     conn.commit()
