@@ -1,10 +1,12 @@
 # Metaclip Server
 
 ## Setup
-- Runs at http://localhost:8000/ (configurable)
-- Middleware (e.g. caddy, nginx) required for https, compression and reverse proxy (myserver.com -> localhost:8000).
+- Copy `config.example` to `config`, fill with your options
   
-**. . .**
+- `python3 main.py` to start at http://localhost:8000
+
+**Note:**  Middleware (e.g. caddy, nginx) required for https, compression and reverse proxy (myserver.com -> localhost:8000)
+
 
 ## API Endpoints
 
@@ -18,26 +20,29 @@
   }
   ```
 
-### Create Item
+### Items Management
+
+#### Create Item
 - **POST** `/items`
-- **Description**: Create a new item (text message or file metadata)
+- **Description**: Create a new item (text or file metadata)
 - **Request Body**:
   ```json
   {
     "type": "text",
-    "content": "Hello world",
-    "file_name": null
+    "content": "Hello world"
   }
   ```
   or
-
   ```json
   {
     "type": "file",
-    "content": base64,
-    "file_name": "document.pdf"
+    "content": "document.pdf"
   }
   ```
+- **Response**: 201 Created
+- **Errors**:
+  - 400: Items must have content
+  - 422: Type must be 'text' or 'file'
 
 #### Get All Items
 - **GET** `/items`
@@ -46,109 +51,121 @@
   ```json
   [
     {
-      "id": "550e8400-e29b-41d4-a716-446655440000",
+      "id": "9159ab07-d299-45b4-2ac6-2a681b256880",
       "type": "text",
-      "content": "Hello world",
-      "file_name": null
+      "content": "Hello world"
     },
     {
       "id": "550e8400-e29b-41d4-a716-446655440001",
       "type": "file",
-      "content": null,
-      "file_name": "document.pdf"
+      "content": "document.pdf"
     }
-    // Note - file's content has to be downloaded from /items/{item_id}
   ]
   ```
 
 #### Get Specific Item
 - **GET** `/items/{item_id}`
-- **Description**: Retrieve a specific item by ID
+- **Description**: Retrieve an item by ID
 - **Parameters**:
-  - `item_id` (path): UUID of the item
+  - `item_id`: UUID of the item
 - **Response**: 
   ```json
   {
     "id": "550e8400-e29b-41d4-a716-446655440000",
     "type": "text",
-    "content": "Hello world",
-    "file_name": null
+    "content": "Hello world"
   }
   ```
-  or
-
-  ```json
-  {
-    "id": "550e8400-e29b-41d4-a716-446655440001",
-    "type": "file",
-    "content": base64,
-    "file_name": "document.pdf"
-  }
-  ```
-- **Error Response**: HTTP 404 Not Found if item doesn't exist
+- **Errors**: 404: Item doesn't exist 
 
 #### Delete Item
 - **DELETE** `/items/{item_id}`
 - **Description**: Delete an item by ID
 - **Parameters**:
-  - `item_id` (path): UUID of the item
-- **Response**: HTTP 204 No Content (no content body)
-- **Error Response**: HTTP 404 Not Found if item doesn't exist
+  - `item_id`: UUID of the item
+- **Response**: 204 No Content
+- **Errors**: 404: Item doesn't exist
+
+### File Operations
+
+#### Get File length
+- **HEAD** `/file/{item_id}`
+- **Description**: Get file length without downloading it
+- **Parameters**:
+  - `item_id`: UUID of the file item
+- **Response Headers**:
+  - `Content-Length`: File size in bytes
+  - `Content-Type`: application/octet-stream
+- **Error Responses**:
+  - 404: Item not found
+  - 410: File lost
+  - 415: Not a file
+
+#### Download File
+- **GET** `/file/{item_id}`
+- **Description**: Download file content with optional range support
+- **Parameters**:
+  - `item_id`: UUID of the file item
+- **Headers**:
+  - `range` (optional): Range of bytes for partial download (e.g., "bytes=0-499")
+- **Response**: Binary file representation
+- **Response Headers**:
+  - `Content-Length`: File size in bytes
+  - `Content-Type`: application/octet-stream
+  - `Content-Range`: same as `range` (if provided)
+- **Status Codes**:
+  - 200: Full content
+  - 206: Partial content
+- **Errors**:
+  - 400: Invalid range format
+  - 404: Item doesn't exist
+  - 410: File lost
+  - 415: Not a file
+  - 416: Invalid range
+  
+#### Upload File
+- **PUT** `/file/{item_id}`
+- **Description**: Upload content of an existing file item
+- **Parameters**:
+  - `item_id` (path): UUID of the file item
+- **Request Body**: File content as binary data (multipart/form-data)
+- **Response**: HTTP 201 Created (no content body)
+- **Error Responses**:
+  - HTTP 404: Item doesn't exist
+  - HTTP 400: Not a file
+  - HTTP 500: Failed to write file
 
 ### WebSocket
 
-#### WebSocket Endpoint
 - **WebSocket** `/ws`
 - **Description**: Real-time notifications for item creation and deletion
 - **Messages**:
   - **Server → Client**: Item creation notification
     ```json
     {
-      "type": "item_created",
+      "type": "created",
       "item_id": "550e8400-e29b-41d4-a716-446655440000"
     }
     ```
   - **Server → Client**: Item deletion notification
     ```json
     {
-      "type": "item_deleted",
-      "item_id": "550e8400-e29b-41d4-a716-446655440000"
+      "type": "deleted",
+      "item_id": "9159ab07-d299-45b4-2ac6-2a681b256880"
     }
     ```
-  - **Client → Server**: Ping/Heartbeat
+  - **Client → Server**: Heartbeat check
     ```json
     {
       "type": "ping"
     }
     ```
-  - **Server → Client**: Pong response
+  - **Server → Client**: Heartbeat proof
     ```json
     {
       "type": "pong"
     }
     ```
 
-### Error Responses
-
-#### Validation Errors
-- **HTTP 400 Bad Request**: Invalid request data
-  ```json
-  {
-    "detail": "Text items cannot have file_name"
-  }
-  ```
-
-#### Not Found Errors
-- **HTTP 404 Not Found**: Item not found
-  ```json
-  {
-    "detail": "Item not found"
-  }
-  ```
-
-#### Validation Errors
-- **HTTP 422 Unprocessable Entity**: Invalid item type
-  ```json
-  {
-    "detail": "Type must be 'text' or 'file'"
-  }
+---
+### Leave a star! 🩵

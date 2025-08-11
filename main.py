@@ -1,14 +1,14 @@
 from configparser import ConfigParser
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Response
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException,\
+                    Response, Header, UploadFile, File
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import List, Optional, Dict
-from base64 import b64decode, b64encode
 import sqlite3
 import json
 import uuid
 from datetime import datetime
 import os
+from re import match
 
 # Configuration
 config = ConfigParser()
@@ -22,6 +22,7 @@ app = FastAPI()
 
 def db():
     conn = sqlite3.connect(db_file)
+    conn.row_factory = sqlite3.Row
     return conn
 
 def make_dirs():
@@ -34,24 +35,25 @@ def init_db():
         CREATE TABLE IF NOT EXISTS items (
             id TEXT PRIMARY KEY,
             type TEXT NOT NULL CHECK (type IN ('text', 'file')),
-            content TEXT,
-            file_name TEXT
+            content TEXT
         )
     ''')
     conn.commit()
     conn.close()
 
+def path_to(item_id: str) -> str:
+    return os.path.join(files_dir, item_id)
+
 # Pydantic models for request/response
 class Item(BaseModel):
-    id: Optional[str] = None
+    id: str | None = None
     type: str
-    content: Optional[str]
-    file_name: Optional[str] = None
+    content: str | None = None
 
 # WebSocket connection manager for broadcasting changes
 class ConnectionManager:
     def __init__(self):
-        self.active_connections: List[WebSocket] = []
+        self.active_connections: list[WebSocket] = []
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
@@ -73,6 +75,7 @@ class ConnectionManager:
         # Remove dead connections after iteration
         for dead_connection in dead_connections:
             self.active_connections.remove(dead_connection)
+
 manager = ConnectionManager()
 
 @app.post("/items")
@@ -80,59 +83,41 @@ async def create_item(item: Item):
     "Create a new item"
 
     if item.type not in ['text', 'file']:
+        #422 Unprocessable Entity
         raise HTTPException(status_code=422, detail="Type must be 'text' or 'file'")
-    
-    if item.type == 'text' and item.file_name:
-        raise HTTPException(status_code=400, detail="Text items cannot have file_name")
     
     item_id = str(uuid.uuid4())
 
+    if not item.content:
+        #400 Bad Request
+        raise HTTPException(status_code=400, detail="Items must have content")
+
     if item.type == 'file':
-        # For file items, content must be provided and file_name must be provided
-        if not item.content or not item.file_name:
-            raise HTTPException(status_code=400, detail="File items must have both content and file_name")
-        
-        # Decode base64 content to binary
-        try:
-            file_content = b64decode(item.content, validate=True)
-        except:
-            raise HTTPException(status_code=400, detail="File content must be valid base64")
-        
-        # Create file
-        file_path = os.path.join(files_dir, item_id)
-        
-        # Write file content
-        try:
-            with open(file_path, 'wb') as f:
-                f.write(file_content)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to write file: {str(e)}")
+        # Create empty file
+        with open(path_to(item_id), 'wb') as f: pass
     
     conn = db()
     cursor = conn.cursor()
     
-    
-    # For file items, store only the filename in database, content is None
-    db_content = None if item.type == 'file' else item.content
-    
+    # Store content directly (for text items: text content, for file items: file name)
     cursor.execute('''
-        INSERT INTO items (id, type, content, file_name)
-        VALUES (?, ?, ?, ?)
-    ''', (item_id, item.type, db_content, item.file_name))
+        INSERT INTO items (id, type, content)
+        VALUES (?, ?, ?)
+    ''', (item_id, item.type, item.content))
     
     conn.commit()
     conn.close()
     
     # Broadcast to all connected clients that a new item was created
     await manager.broadcast(json.dumps({
-        "type": "item_created",
+        "type": "created",
         "item_id": item_id
     }))
     
-    # Return 201 Created status (no content)
-    return Response(status_code=201)
+    #201 Created
+    return Response(status_code=201, content=item_id, media_type="text/plain")
 
-@app.get("/items", response_model=List[Item])
+@app.get("/items", response_model = list[Item])
 async def get_items():
     """Get all items"""
 
@@ -146,23 +131,10 @@ async def get_items():
     
     result = []
     for item in items:
-        if item["type"] == "file" and item["file_name"]:
-            # For file items, read the file content and encode as base64
-            file_path = os.path.join(files_dir, item["id"])
-            try:
-                with open(file_path, 'rb') as f:
-                    file_content = f.read()
-                content = b64encode(file_content).decode('utf-8')
-            except:
-                content = None
-        else:
-            content = item["content"]
-        
         result.append(Item(
             id=item["id"],
             type=item["type"],
-            content=content,
-            file_name=item["file_name"]
+            content=item["content"]
         ))
     
     return result
@@ -170,6 +142,7 @@ async def get_items():
 @app.get("/items/{item_id}", response_model = Item)
 async def get_item(item_id: str):
     """Get an item by ID"""
+    
     conn = db()
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM items WHERE id = ?", (item_id,))
@@ -177,25 +150,13 @@ async def get_item(item_id: str):
     conn.close()
     
     if not item:
+        #404 Not found
         raise HTTPException(status_code=404, detail="Item not found")
-    
-    if item["type"] == "file" and item["file_name"]:
-        # For file items, read the file content and encode as base64
-        file_path = os.path.join(files_dir, item_id)
-        try:
-            with open(file_path, 'rb') as f:
-                file_content = f.read()
-            content = b64encode(file_content).decode('utf-8')
-        except:
-            content = None
-    else:
-        content = item["content"]
     
     return Item(
         id=item["id"],
         type=item["type"],
-        content=content,
-        file_name=item["file_name"]
+        content=item["content"]
     )
 
 @app.delete("/items/{item_id}")
@@ -203,37 +164,29 @@ async def delete_item(item_id: str):
     """Delete an item by ID"""
     conn = db()
     cursor = conn.cursor()
+    # Check if item exists
+    cursor.execute("SELECT id, type FROM items WHERE id = ?", (item_id,))
+    item = cursor.fetchone()
     
-    # Check if item exists and if it's a file
-    cursor.execute("SELECT type, file_name FROM items WHERE id = ?", (item_id,))
-    item_data = cursor.fetchone()
-    
-    if not item_data:
+    if not item:
         conn.close()
-        raise HTTPException(status_code=404, detail="Item not found")
+        raise HTTPException(status_code=404, detail="Item doesn't exist")
     
     # If it's a file, delete the actual file
-    if item_data["type"] == "file" and item_data["file_name"]:
-        file_path = os.path.join(files_dir, item_id)
-        try:
-            if os.path.exists(file_path):
-                os.remove(file_path)
-        except:
-            # Don't fail if file deletion fails, just log it
-            pass
+    if item["type"] == "file":
+        if os.path.exists(path_to(item_id)):
+            os.remove(path_to(item_id))
     
     cursor.execute("DELETE FROM items WHERE id = ?", (item_id,))
     conn.commit()
     conn.close()
     
-    # Broadcast to all connected clients that an item was deleted
     await manager.broadcast(json.dumps({
-        "type": "item_deleted",
+        "type": "deleted",
         "item_id": item_id
     }))
     
-    # Return 204 No Content status (no content)  
-    return Response(status_code=204)
+    return Response(status_code = 204) # No Content
 
 # WebSocket endpoint for real-time notifications
 @app.websocket("/ws")
@@ -258,6 +211,125 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+
+# def verify_id(item_id: str) -> None:
+#     if not match(r'^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89aAbB][a-f0-9]{3}-[a-f0-9]{12}$', item_id):
+#         pass                          # ^ uuid4 regex ^
+
+@app.head("/file/{item_id}")
+async def head_file(item_id: str):
+    """Get file metadata (HEAD request)"""
+    conn = db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT type FROM items WHERE id = ?", (item_id,))
+    item = cursor.fetchone()
+    conn.close()
+    
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    if item["type"] != "file":
+        raise HTTPException(status_code=415, detail="Not a file")
+    
+    if not os.path.exists(path_to(item_id)):
+        raise HTTPException(status_code=410, detail="File lost")
+    
+    file_size = os.path.getsize(path_to(item_id))
+    
+    return Response(
+        status_code=200,
+        headers={
+            "Content-Length": str(file_size),
+            "Content-Type": "application/octet-stream"
+    })
+
+@app.get("/file/{item_id}")
+async def get_file(item_id: str, range: str | None = Header(None)):
+    """Get file content with optional range support"""
+    conn = db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT type FROM items WHERE id = ?", (item_id,))
+    item = cursor.fetchone()
+    conn.close()
+    
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    if item["type"] != "file":
+        raise HTTPException(status_code=415, detail="Not a file")
+    
+    file_path = os.path.join(files_dir, item_id)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=410, detail="File lost")
+    
+    file_size = os.path.getsize(file_path)
+    
+    if range:
+        # Parse range header: "bytes=start-end"
+        range_str = range[6:]  # Remove "bytes="
+        try:
+            start_str, end_str = range_str.split("-", 1)
+            start = int(start_str)
+            end = int(end_str)
+            
+            # Validate range
+            if start < 0 or end >= file_size or start > end:
+                return Response(status_code=416)
+            
+            # Read the specified range
+            with open(file_path, 'rb') as f:
+                f.seek(start)
+                content = f.read(end - start + 1)
+            
+            return Response(
+                content=content,
+                status_code=206, # Partial Content
+                headers={
+                    "Content-Range": f"bytes {start}-{end}/{file_size}",
+                    "Content-Length": str(len(content)),
+                    "Content-Type": "application/octet-stream"
+                }
+            )
+        except (ValueError, IndexError):
+            return Response(status_code=400, content="Invalid range")
+    
+    # Return full file
+    with open(file_path, 'rb') as f:
+        content = f.read()
+    
+    return Response(
+        content=content,
+        status_code=200, # OK
+        headers={
+            "Content-Length": str(file_size),
+            "Content-Type": "application/octet-stream"
+        }
+    )
+
+@app.put("/file/{item_id}")
+async def upload_file(item_id: str, file: UploadFile = File(...)):
+    """Upload file content for an existing file item"""
+    conn = db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT type FROM items WHERE id = ?", (item_id,))
+    item = cursor.fetchone()
+    conn.close()
+    
+    if not item:
+        raise HTTPException(status_code=404, detail="Item doesn't exist")
+    
+    if item["type"] != "file":
+        raise HTTPException(status_code=400, detail="Not a file")
+    
+    file_path = os.path.join(files_dir, item_id)
+    
+    try:
+        # Save the uploaded file content
+        with open(file_path, 'wb') as f:
+            content = await file.read()
+            f.write(content)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to write file: {str(e)}")
+    
+    return Response(status_code=201)
 
 @app.get("/")
 async def root():

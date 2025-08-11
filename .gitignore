@@ -1,5 +1,6 @@
 data/
 config
+test.py
 
 .vscode/
 .venv/
