@@ -1,36 +1,24 @@
-from configparser import ConfigParser
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException,\
-                    Response, Header, UploadFile, File
-from fastapi.responses import JSONResponse
+from fastapi import (
+    FastAPI, WebSocket, WebSocketDisconnect, HTTPException,
+    Response, Header, UploadFile, File
+)
 from pydantic import BaseModel
-import sqlite3
-import json
-import uuid
-from datetime import datetime
-import os
-from re import match
-
-# Configuration
-config = ConfigParser()
-config.read('config')
-fastapi_port = int(config.get('FastAPI', 'port'))
-log_level = config.get('FastAPI', 'log_level')
-db_file = config.get('SQLite', 'db_file')
-files_dir = config.get('SQLite', 'files_dir')
+import sqlite3, json, uuid, os
 
 app = FastAPI()
 
-def db():
-    conn = sqlite3.connect(db_file)
-    conn.row_factory = sqlite3.Row
+def get_db() -> sqlite3.Connection:
+    """Get a connection to sqlite db with row factory"""
+    conn = sqlite3.connect("data/sqlite.db")
+    conn.row_factory = sqlite3.Row  # item(0) -> item["id"]
     return conn
 
-def make_dirs():
-    os.makedirs(os.path.dirname(db_file), exist_ok=True)
-    os.makedirs(files_dir, exist_ok=True)
+def make_dirs() -> None:
+    os.makedirs(os.path.dirname("data/sqlite.db"), exist_ok=True)
+    os.makedirs("data/files/", exist_ok=True)
     
-def init_db():
-    conn = db()
+def init_get_db() -> None:
+    conn = get_db()
     conn.cursor().execute('''
         CREATE TABLE IF NOT EXISTS items (
             id TEXT PRIMARY KEY,
@@ -42,7 +30,7 @@ def init_db():
     conn.close()
 
 def path_to(item_id: str) -> str:
-    return os.path.join(files_dir, item_id)
+    return os.path.join("data/files/", item_id)
 
 # Pydantic models for request/response
 class Item(BaseModel):
@@ -69,10 +57,10 @@ class ConnectionManager:
             try:
                 await connection.send_text(message)
             except:
-                # Connection might be dead, mark for removal
+                # Connection unreachable, mark for removal
                 dead_connections.append(connection)
         
-        # Remove dead connections after iteration
+        # Remove dead connections
         for dead_connection in dead_connections:
             self.active_connections.remove(dead_connection)
 
@@ -91,12 +79,8 @@ async def create_item(item: Item):
     if not item.content:
         #400 Bad Request
         raise HTTPException(status_code=400, detail="Items must have content")
-
-    if item.type == 'file':
-        # Create empty file
-        with open(path_to(item_id), 'wb') as f: pass
     
-    conn = db()
+    conn = get_db()
     cursor = conn.cursor()
     
     # Store content directly (for text items: text content, for file items: file name)
@@ -115,13 +99,13 @@ async def create_item(item: Item):
     }))
     
     #201 Created
-    return Response(status_code=201, content=item_id, media_type="text/plain")
+    return Response(status_code=201, content=item_id)
 
 @app.get("/items", response_model = list[Item])
 async def get_items():
     """Get all items"""
 
-    conn = db()
+    conn = get_db()
     cursor = conn.cursor()
     cursor.execute(
         "SELECT * FROM items ORDER BY rowid DESC"
@@ -143,7 +127,7 @@ async def get_items():
 async def get_item(item_id: str):
     """Get an item by ID"""
     
-    conn = db()
+    conn = get_db()
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM items WHERE id = ?", (item_id,))
     item = cursor.fetchone()
@@ -151,7 +135,7 @@ async def get_item(item_id: str):
     
     if not item:
         #404 Not found
-        raise HTTPException(status_code=404, detail="Item not found")
+        raise HTTPException(status_code=404, detail="Item doesn't exist")
     
     return Item(
         id=item["id"],
@@ -162,7 +146,7 @@ async def get_item(item_id: str):
 @app.delete("/items/{item_id}")
 async def delete_item(item_id: str):
     """Delete an item by ID"""
-    conn = db()
+    conn = get_db()
     cursor = conn.cursor()
     # Check if item exists
     cursor.execute("SELECT id, type FROM items WHERE id = ?", (item_id,))
@@ -212,14 +196,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
-# def verify_id(item_id: str) -> None:
-#     if not match(r'^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89aAbB][a-f0-9]{3}-[a-f0-9]{12}$', item_id):
-#         pass                          # ^ uuid4 regex ^
+# r'^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89aAbB][a-f0-9]{3}-[a-f0-9]{12}$'
+# uuid4 regex (just in case)
 
 @app.head("/file/{item_id}")
 async def head_file(item_id: str):
     """Get file metadata (HEAD request)"""
-    conn = db()
+    conn = get_db()
     cursor = conn.cursor()
     cursor.execute("SELECT type FROM items WHERE id = ?", (item_id,))
     item = cursor.fetchone()
@@ -245,7 +228,7 @@ async def head_file(item_id: str):
 @app.get("/file/{item_id}")
 async def get_file(item_id: str, range: str | None = Header(None)):
     """Get file content with optional range support"""
-    conn = db()
+    conn = get_db()
     cursor = conn.cursor()
     cursor.execute("SELECT type FROM items WHERE id = ?", (item_id,))
     item = cursor.fetchone()
@@ -256,7 +239,7 @@ async def get_file(item_id: str, range: str | None = Header(None)):
     if item["type"] != "file":
         raise HTTPException(status_code=415, detail="Not a file")
     
-    file_path = os.path.join(files_dir, item_id)
+    file_path = os.path.join("data/files/", item_id)
     if not os.path.exists(file_path):
         raise HTTPException(status_code=410, detail="File lost")
     
@@ -272,7 +255,7 @@ async def get_file(item_id: str, range: str | None = Header(None)):
             
             # Validate range
             if start < 0 or end >= file_size or start > end:
-                return Response(status_code=416)
+                return HTTPException(status_code=416, detail="Invalid range")
             
             # Read the specified range
             with open(file_path, 'rb') as f:
@@ -289,7 +272,7 @@ async def get_file(item_id: str, range: str | None = Header(None)):
                 }
             )
         except (ValueError, IndexError):
-            return Response(status_code=400, content="Invalid range")
+            return HTTPException(status_code=400, detail="Invalid range format")
     
     # Return full file
     with open(file_path, 'rb') as f:
@@ -307,7 +290,7 @@ async def get_file(item_id: str, range: str | None = Header(None)):
 @app.put("/file/{item_id}")
 async def upload_file(item_id: str, file: UploadFile = File(...)):
     """Upload file content for an existing file item"""
-    conn = db()
+    conn = get_db()
     cursor = conn.cursor()
     cursor.execute("SELECT type FROM items WHERE id = ?", (item_id,))
     item = cursor.fetchone()
@@ -319,7 +302,7 @@ async def upload_file(item_id: str, file: UploadFile = File(...)):
     if item["type"] != "file":
         raise HTTPException(status_code=400, detail="Not a file")
     
-    file_path = os.path.join(files_dir, item_id)
+    file_path = os.path.join("data/files/", item_id)
     
     try:
         # Save the uploaded file content
@@ -338,7 +321,7 @@ async def root():
 
 if __name__ == "__main__":
     make_dirs()
-    init_db()
+    init_get_db()
 
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=fastapi_port, log_level=log_level)
+    uvicorn.run(app, host="0.0.0.0", port=8000)

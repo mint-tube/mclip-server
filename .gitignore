@@ -1,6 +1,6 @@
 data/
 config
-test.py
+caddy
 
 .vscode/
 .venv/

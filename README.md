@@ -1,11 +1,16 @@
 # Metaclip Server
 
 ## Setup
-- Copy `config.example` to `config`, fill with your options
-  
-- `python3 main.py` to start at http://localhost:8000
+- Copy `caddy.example` to `caddy`, fill with your options
 
-**Note:**  Middleware (e.g. caddy, nginx) required for https, compression and reverse proxy (myserver.com -> localhost:8000)
+- Install `caddy` (middleware for https, compression, authtorization and etc.)
+
+- Install packages for the python environment you will use (system-wide or in a venv)
+  
+- `caddy reload --config caddy` to start internal proxy at https://yourdomain.com
+
+- `python3 main.py` to start Metaclip itself at http://localhost:8000
+
 
 
 ## API Endpoints
@@ -33,6 +38,7 @@
   }
   ```
   or
+
   ```json
   {
     "type": "file",
@@ -40,6 +46,10 @@
   }
   ```
 - **Response**: 201 Created
+  ```
+  [text/plain]
+  9159ab07-d299-45b4-2ac6-2a681b256880
+  ```
 - **Errors**:
   - 400: Items must have content
   - 422: Type must be 'text' or 'file'
@@ -129,11 +139,11 @@
 - **Parameters**:
   - `item_id` (path): UUID of the file item
 - **Request Body**: File content as binary data (multipart/form-data)
-- **Response**: HTTP 201 Created (no content body)
+- **Response**: 201 Created
 - **Error Responses**:
-  - HTTP 404: Item doesn't exist
-  - HTTP 400: Not a file
-  - HTTP 500: Failed to write file
+  - 400: Not a file
+  - 404: Item doesn't exist
+  - 500: Failed to write file
 
 ### WebSocket
 

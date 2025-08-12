@@ -1,7 +1,0 @@
-[FastAPI]
-port = 8000
-log_level = debug
-
-[SQLite]
-db_file  = data/.sqlite
-files_dir = data/files/

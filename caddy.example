@@ -1,0 +1,28 @@
+yourdomain.com { # OR ip:port to listen at
+    # WebSocket connections (no authentication)
+    handle /ws {
+        reverse_proxy localhost:8000
+    }
+    
+    # Health check (no authentication)
+    handle / {
+        reverse_proxy localhost:8000
+    }
+
+    # Other endpoints
+    handle {
+        # Check for Authorization header
+        @auth header Authorization *
+        
+        # Replace "your-secret-token" with your actual token
+        @authorized expression {http.request.header.Authorization} == "your-secret-token"
+        
+        # If token is valid, proxy to the app
+        route @authorized {
+            reverse_proxy localhost:8000
+        }
+        
+        # If no valid token found, return 401
+        respond "Unauthorized" 401
+    }
+}
