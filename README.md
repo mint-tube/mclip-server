@@ -7,7 +7,9 @@
   
 - Install `certbot` for https certificates
 
-- `python3 main.py` to start server at https://localhost:443 ()
+- Add a token (9 bytes must suffice) for each user to `/data/tokens.txt`
+
+- `python3 main.py` to start server at :443 or :80
 
 
 
@@ -119,10 +121,8 @@ application/json
 These SQL operations are ALLOWED:
 - `SELECT`, `INSERT`, `DELETE`
 
-All other SQL operations are BLOCKED, including but not limited to:
-- `DROP`, `ALTER`, `CREATE`, `UPDATE`, `TRUNCATE`, `GRANT`, `REVOKE`
-
-Multiple statements separated by semicolons are FORBIDDEN
+Most other SQL operations are BLOCKED, including but not limited to:
+- `DROP`, `ALTER`, `CREATE`, `UPDATE`, `UPSERT`
 
 ### Content Encoding
 
