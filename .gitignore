@@ -1,6 +1,5 @@
+*.db
 data/
-config
-caddy
 
 .vscode/
 .venv/
