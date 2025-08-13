@@ -72,7 +72,7 @@ def init_db(token: str) -> None:
             id TEXT PRIMARY KEY,
             type TEXT NOT NULL,
             name TEXT NOT NULL,
-            content TEXT NOT NULL
+            content BLOB NOT NULL
         )''', token=token)
 
 def path_to(item_id: str) -> str:
