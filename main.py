@@ -3,7 +3,7 @@
 from fastapi import FastAPI, HTTPException, Response, Request
 from fastapi.middleware.gzip import GZipMiddleware
 from typing import Any
-from pydantic import BaseModel
+from base64 import b64encode
 import sqlite3, json, os, subprocess, uvicorn
 import logging
 import sys
@@ -135,8 +135,11 @@ async def api(request: Request):
     try:
         init_db(auth_token)
         result = db_exec(content, auth_token)
+        # Convert BLOB bytes to base64 strings
+        for row in result: row['content'] = b64encode(row['content'])
+        processed_result = [row['content'] for row in result]
         return Response(media_type="application/json",
-                    content=json.dumps(result))
+                    content=json.dumps(processed_result))
     except sqlite3.Error as e:
         log.exception(e)
         raise HTTPException(status_code=422,
