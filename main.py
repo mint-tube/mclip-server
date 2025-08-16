@@ -137,9 +137,8 @@ async def api(request: Request):
         result = db_exec(content, auth_token)
         # Convert BLOB bytes to base64 strings
         for row in result: row['content'] = b64encode(row['content'])
-        processed_result = [row['content'] for row in result]
         return Response(media_type="application/json",
-                    content=json.dumps(processed_result))
+                    content=json.dumps(result))
     except sqlite3.Error as e:
         log.exception(e)
         raise HTTPException(status_code=422,
