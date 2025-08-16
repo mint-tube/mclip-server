@@ -9,8 +9,9 @@
 
 - Add a token (9 bytes must suffice) for each user to `/data/tokens.txt`
 
-- `python3 main.py` to start server at :443 or :80
-
+- `python3 main.py` to start server at :443 or :80  
+  
+*Note: Python >= 3.12 required*
 
 
 ## Database Schema
