@@ -160,6 +160,7 @@ if __name__ == "__main__":
             port=80,
             timeout_keep_alive=10
         )
+        exit(0)
 
     elif cert_choice == 'y':
         domain    = input("Your domain:\n")
@@ -195,7 +196,6 @@ if __name__ == "__main__":
         }
         log.info(f"Using existing SSL certificates for {domain}")
 
-    # Run the server
     uvicorn.run(
         app,
         host="0.0.0.0",
