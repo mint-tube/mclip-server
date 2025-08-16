@@ -1,3 +1,5 @@
+#! /bin/env python3
+
 from fastapi import FastAPI, HTTPException, Response, Request
 from fastapi.middleware.gzip import GZipMiddleware
 from typing import Any
@@ -118,7 +120,7 @@ async def api(request: Request):
         raise HTTPException(status_code=401,
                             detail="Invalid auth token")
 
-    if content_type != "text/plain":
+    if content_type not in ("text/plain", "text/plain; charset=utf-8":
         raise HTTPException(status_code=400,
                             detail="Invalid Conent-Type")
     
