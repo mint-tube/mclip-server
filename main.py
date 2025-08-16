@@ -136,7 +136,9 @@ async def api(request: Request):
         init_db(auth_token)
         result = db_exec(content, auth_token)
         # Convert BLOB bytes to base64 strings
-        for row in result: row['content'] = b64encode(row['content']).decode()
+        for row in result:
+            if 'content' in row.keys():
+                row['content'] = b64encode(row['content']).decode()
         return Response(media_type="application/json",
                     content=json.dumps(result))
     except sqlite3.Error as e:
