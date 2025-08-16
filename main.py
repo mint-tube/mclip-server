@@ -120,7 +120,7 @@ async def api(request: Request):
         raise HTTPException(status_code=401,
                             detail="Invalid auth token")
 
-    if content_type not in ("text/plain", "text/plain; charset=utf-8":
+    if content_type not in ("text/plain", "text/plain; charset=utf-8"):
         raise HTTPException(status_code=400,
                             detail="Invalid Conent-Type")
     
