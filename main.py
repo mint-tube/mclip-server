@@ -150,30 +150,57 @@ async def api(request: Request):
 
 if __name__ == "__main__":
     app.add_middleware(GZipMiddleware)
-    
-    # Initialize SSL variables
     cert_info = {"certfile": None, "keyfile": None}
-    use_ssl   = False
-    domain    = input("Enter your domain (required for https):\n")
-    email     = input("Your email (required for https):\n")
 
-    # Get SSL certificates
-    try:
-        if domain and email:
-            cert_info = get_cert(domain, email)
-            use_ssl = True
-            log.info(f"SSL certificates loaded for {domain}")
-        else:
-            log.warning(f"Domain or email not specified, http-only")
-    except Exception as e:
-        log.error(f"Failed to load SSL certificates: {e}")
+    cert_choice = input("Renew SSL sertificates? (y/n/http): ")
+    if cert_choice == 'http':
+        uvicorn.run(
+            app,
+            host="0.0.0.0",
+            port=80,
+            timeout_keep_alive=10
+        )
+
+    elif cert_choice == 'y':
+        domain    = input("Your domain:\n")
+        email     = input("Your emai:\n")
+
+        # Get SSL certificates
+        try:
+            if domain and email:
+                cert_info = get_cert(domain, email)
+                log.info(f"SSL certificates loaded for {domain}")
+            else:
+                log.warning(f"Domain or email not specified, http-only")
+        except Exception as e:
+            log.error(f"Failed to load SSL certificates: \n{e}")
+            exit(1)
+
+    elif cert_choice == 'n':
+        domain = input("Your domain:\n")
+        
+        # Use existing SSL certificates from certbot
+        cert_path = f"/etc/letsencrypt/live/{domain}/fullchain.pem"
+        key_path = f"/etc/letsencrypt/live/{domain}/privkey.pem"
+        
+        # Check if certificate files exist
+        if not os.path.exists(cert_path) or not os.path.exists(key_path):
+            log.error(f"SSL certificates not found for domain {domain}")
+            log.error("Please ensure certificates exist or run with 'y' to generate new ones")
+            exit(1)
+        
+        cert_info = {
+            "certfile": cert_path,
+            "keyfile": key_path
+        }
+        log.info(f"Using existing SSL certificates for {domain}")
 
     # Run the server
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=443 if use_ssl else 80,
-        ssl_certfile=cert_info["certfile"] if use_ssl else None,
-        ssl_keyfile=cert_info["keyfile"] if use_ssl else None,
+        port=443,
+        ssl_certfile=cert_info["certfile"],
+        ssl_keyfile=cert_info["keyfile"],
         timeout_keep_alive=10
     )
