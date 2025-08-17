@@ -95,6 +95,7 @@ def is_valid_token(token: str) -> bool:
     return False
 
 def is_valid_query(query: str) -> tuple[bool, str]:
+    query = query.upper() # <- 'create' == 'CREATE'
     blacklist = [
         "CREATE", "ALTER", "DROP", "UPDATE", "REPLACE", "UPSERT",
         "ATTACH", "DETACH", "VACUUM", "PRAGMA", "CAST", "UNION"
