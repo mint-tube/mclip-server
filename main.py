@@ -104,10 +104,10 @@ def is_valid_query(query: str) -> tuple[bool, str]:
             return (False, banned)
     return (True, "")
 
-@app.get("/")
+@app.head("/api")
 async def root():
     """Health check endpoint"""
-    return {"status": "healthy"}
+    return "healthy"
 
 @app.post("/api")
 async def api(request: Request):
@@ -144,7 +144,7 @@ async def api(request: Request):
     except sqlite3.Error as e:
         log.exception(e)
         raise HTTPException(status_code=422,
-                            detail=f"Query execution failed")
+                            detail=f"Invalid query")
     except Exception as e:
         log.exception(e)
         raise HTTPException(status_code=500,
