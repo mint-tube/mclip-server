@@ -27,7 +27,7 @@ CREATE TABLE items (
 - `id` should be somewhat unique, uuid suggested - collisions will be treated as a database error
 - `type` can be either 'text' or 'file`
 - `name` stores the filename or text identifier
-- `content` stores the actual data as BLOB; must be like X'6C6F20..' or base64'yGVsb8g...' or just 'Hello World' in query
+- `content` stores the actual data as BLOB; must be like X'6C6F20..' or 'Hello World' in query
 
 
 
@@ -44,15 +44,25 @@ CREATE TABLE items (
 - **Description**: Execute SQL queries against the database
 - **Headers**:
   - `Authorization`: `<token>`
-- **Request Body**: SELECT * FROM items WHERE id LIKE '550e*'
+- **Request Body**: SELECT * FROM items'
 - **Response Body**: 
   ```json
   [
-    ["550e8400e29b41d4a716446655440000", "text", "", "SGVsbG8gd29ybGQ="],
-    ["550e8400e29b41d4a716446655440001", "file", "document.pdf", "JVBERi0xLjQK..."]
+    {
+      "id": "550e8400e29b41d4a716446655440000",
+      "type": "text",
+      "name": "Hello World",
+      "content": "48656c6c6f20576f726c64"
+    },
+    {
+      "id": "9159ab07d29945b42ac62a681b256880",
+      "type": "file",
+      "name": "document.pdf",
+      "content": "f27d0953c1be8197..."
+    }
   ]
   ```
-  - Note: `content` is returned as base64-encoded text
+  - Note: `content` is returned as hex-encoded string. Use UTF-8 for compatibility 
 - **Errors**:
   - 400: Bad request / Invalid Content-Type
   - 401: Invalid auth token
@@ -82,7 +92,7 @@ SELECT * FROM items WHERE name LIKE '%document%';
 #### Write Operations
 ```sql
 -- Insert new text item
-INSERT INTO items (id, type, name, content) VALUES ('550e8400e29b41d4a716446655440000', 'text', 'hello', X'48656c6c6f20776f726c64');
+INSERT INTO items (id, type, name, content) VALUES ('550e8400e29b41d4a716446655440000','text', 'hello', X'48656c6c6f20776f726c64');
 
 -- Insert new file item
 INSERT INTO items (id, type, name, content) VALUES ('9159ab07d29945b42ac62a681b256880', 'file', 'document.pdf', X'255044462d312e340a...');
@@ -112,8 +122,8 @@ SQL_QUERY_IN_PLAIN_TEXT
 application/json
 ```json
 [
-  ["uuid1", "text", "name1", "base64_encoded_content1"],
-  ["uuid2", "file", "name2", "base64_encoded_content2"]
+  ["uuid1", "text", "name1", "hex_encoded_utf8"],
+  ["uuid2", "file", "name2", "hex_encoded_utf8_2"]
 ]
 ```
 
@@ -127,9 +137,7 @@ Most other SQL operations are BLOCKED, including but not limited to:
 
 ### Content Encoding
 
-- **BLOB to Base64**: When returning BLOB data in JSON responses, content is base64-encoded
-- **Base64 to BLOB**: When inserting BLOB data, clients should provide hex literals (`X'...'`) in SQL queries
-- **Text Content**: For text items, content can be stored as plain text strings
-
+- **Inserting BLOB**: In queries, both 'Hello' (UTF-8) and X'48656c6c6f' will be converted to the same byte arrays
+- **Returning HEX**: When returning query execution results, content will be encoded to hex
 ---
 ### Leave a star! 🩵

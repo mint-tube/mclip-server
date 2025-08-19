@@ -3,7 +3,6 @@
 from fastapi import FastAPI, HTTPException, Response, Request
 from fastapi.middleware.gzip import GZipMiddleware
 from typing import Any
-from base64 import b64encode
 import sqlite3, json, os, subprocess, uvicorn
 import logging
 import sys
@@ -136,10 +135,10 @@ async def api(request: Request):
     try:
         init_db(auth_token)
         result = db_exec(content, auth_token)
-        # Convert BLOB bytes to base64 strings
+        # Convert BLOB bytes to hex string
         for row in result:
             if 'content' in row.keys():
-                row['content'] = b64encode(row['content']).decode()
+                row['content'] = row['content'].hex()
         return Response(media_type="application/json",
                     content=json.dumps(result))
     except sqlite3.Error as e:
