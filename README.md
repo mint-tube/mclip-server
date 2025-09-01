@@ -1,4 +1,4 @@
-# Metaclip Server
+# mclip server
 
 ## Setup
 
