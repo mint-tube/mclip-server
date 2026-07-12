@@ -2,34 +2,29 @@
 
 ## Setup
 
-- Install packages for the python environment you will use (system-wide, venv, conda)
+Install `fastapi` for whatever python environment you are using
   
-- Put a token for every user in `data/tokens.txt` (any text, separated by new lines)
+To run over **http**:   
+- `./main.py http`
 
-- Optional: Install `certbot` for https certificates
-
-- Optional: Change prompts for domain and email to static values
-
-- `python3 main.py` to start server at :443 or :80  
-  
-*Note: Python >= 3.12 required*
-
+To run over **https**:
+- Install `certbot`
+- `./main.py https <your_domain>`
 
 ## Database Schema
 ```sql
 CREATE TABLE items (
-    id TEXT NOT NULL,
+    id TEXT PRIMARY KEY,
     type TEXT NOT NULL,
     name TEXT NOT NULL,
     content BLOB NOT NULL
 );
 ```
 
-- `id` should be somewhat unique - collisions will be treated as a client error
+- `id` should be unique - collisions will be treated as a client error
 - `type` can be either 'text' or 'file`
-- `name` stores the filename or text identifier
-- `content` must be binary; X'6a682f9b0e..' in query
-
+- `name` stores the name of the file or text note
+- `content` is binary; use X'...' to insert hex-encoded data
 
 
 ## API Endpoints
@@ -45,7 +40,7 @@ CREATE TABLE items (
 - **Description:** Execute SQL query in the database
 - **Request:**  
   ```yaml
-  Authorization: <token>
+  Authorization: Basic base64(<user>:<password>)
   Content-Type: text/plain; charset=utf-8
   ```
   ```sql
@@ -71,32 +66,36 @@ CREATE TABLE items (
     }
   ]
   ```
-  - Note: `content` is a hex-encoded UTF-8 string.
-- **Errors:**
-  - 400: Bad request / Invalid Content-Type
-  - 401: Invalid auth token
-  - 422: Forbidden command: \<command> / Invalid query
-  - 500: Internal server error
+  Note: `content` is a base64-encoded UTF-8 string.
+- **Status codes:**
+  - 200 OK: **Query executed successfully**
+  - 400 Bad Request: **Malformed request**
+  - 400 Bas Request: **Malformed query**
+  - 401 Unauthorized: **Invalid credentials**
+  - 422 Unprocessable Content: **Query contains forbidden elements**
+  - 500 Internal Server Error: **Try again**
 
 ### Suggested Operations
 
 #### Read Operations
 ```sql
--- Get all items
-SELECT * FROM items;
+-- Get all items, only fetch first 150 bytes of content
+SELECT id, type, name, substr(content, 1, 150) FROM items;
 
 -- Get specific item by ID
 SELECT * FROM items WHERE id = '550e8400e29b41d4a7164466';
 
 -- Get items by ID prefix
-SELECT * FROM items WHERE id LIKE '550e*';
+SELECT id, type, name, substr(content, 1, 150) FROM items WHERE id LIKE '550e%';
 
 -- Get items by type
 SELECT * FROM items WHERE type = 'text';
 
 -- Get items by name pattern
-SELECT * FROM items WHERE name LIKE '%document%';
+SELECT id, type, name, substr(content, 1, 150) FROM items WHERE name LIKE '%document%';
 ```
+
+Note that large files may be stored in the database, so you should not fully fetch all the contents on every update.
 
 #### Write Operations
 ```sql
@@ -106,7 +105,7 @@ INSERT INTO items (id, type, name, content) VALUES ('550e8400e29b41d4a7164466','
 -- Insert new file item
 INSERT INTO items (id, type, name, content) VALUES ('9159ab07d29945b42ac62a68', 'file', 'document.pdf', X'255044462d312e340a...');
 
--- Updating items is forbidden because some clients use content caching
+-- Updating items is discouraged due to content caching
 ```
 
 #### Delete Operations
@@ -121,12 +120,11 @@ DELETE FROM items WHERE id LIKE '550e84*';
 DELETE FROM items;
 ```
 
-### Security Restrictions
+### Forbidden Operations
+These SQL operations are explicitly FORBIDDEN:
+- `DROP`, `ALTER`, `CREATE`, `EXPLAIN`, `UPSERT`, `ATTACH`, `DETACH`, `PRAGMA`, `readfile()`
 
-These SQL operations are ALLOWED:
-- `SELECT`, `INSERT`, `DELETE`
+<!-- ### Mclip clients -->
 
-Most other SQL operations are BLOCKED, including but not limited to:
-- `DROP`, `ALTER`, `CREATE`, `UPDATE`, `UPSERT`
 ---
-### Leave a star! 🩵
+# Leave a star! 🩵

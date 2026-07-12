@@ -1,16 +1,11 @@
 #! /bin/env python3
-
 from fastapi import FastAPI, HTTPException, Response, Request
 from fastapi.middleware.gzip import GZipMiddleware
+from base64 import b64encode, b64decode
 from typing import Any
-import sqlite3, json, os, subprocess, uvicorn
-import logging
-import sys
+import sqlite3, json, os, uvicorn, base64, logging, sys
 
 class ColoredFormatter(logging.Formatter):
-    """Custom formatter with colored level names"""
-    
-    # ANSI color codes
     COLORS = {
         'DEBUG': '\033[36m',    # Cyan
         'INFO': '\033[32m',     # Green
@@ -18,55 +13,27 @@ class ColoredFormatter(logging.Formatter):
         'ERROR': '\033[31m',    # Red
         'CRITICAL': '\033[35m', # Magenta
     }
-    RESET = '\033[0m'
     
-    # add color to levelname
     def format(self, record):
-        if record.levelname in self.COLORS:
-            record.levelname = self.COLORS[record.levelname] + record.levelname + self.RESET
-        
+        record.levelname = self.COLORS[record.levelname] + record.levelname + '\033[0m'
         return super().format(record)
 
 # Configure logger to match FastAPI's format with colors
 handler = logging.StreamHandler(sys.stdout)
 handler.setFormatter(ColoredFormatter("%(levelname)s:     %(message)s"))
-logging.basicConfig(
-    level=logging.INFO,
-    handlers=[handler]
-)
+logging.basicConfig( level=logging.INFO, handlers=[handler] )
 log = logging.getLogger()
 
-app = FastAPI()
-
-def get_cert(domain, email):
-    """Issue Let's Encrypt certificate using certbot"""
-    cmd = [
-        "certbot", "certonly",
-        "--standalone",
-        "--email", email,
-        "--agree-tos",
-        "--non-interactive",
-        "-d", domain
-    ]
-    subprocess.run(cmd, check=True)
-    
-    return {
-        "certfile": f"/etc/letsencrypt/live/{domain}/fullchain.pem",
-        "keyfile": f"/etc/letsencrypt/live/{domain}/privkey.pem"
-    }
-
-def db_exec(query: str, token: str) -> list[dict[str, Any]]:
+def db_exec(query: str, user: str) -> list[dict[str, Any]]:
     """Execute a query in data/<token>.db"""
-    conn = sqlite3.connect(f"data/{token}.db", autocommit=True)
-    conn.row_factory = sqlite3.Row  # item[0] -> item["id"]
-    fetched = conn.execute(query).fetchall()
-    if fetched:
-        fetched = [dict(row) for row in fetched]
-    conn.close()
-    return fetched
+    conn = sqlite3.connect(f"data/{user}.db", autocommit=True)
+    conn.row_factory = sqlite3.Row 
+    with conn:
+        fetched = conn.execute(query).fetchall()
+        return [dict(row) for row in fetched]
 
     
-def init_db(token: str) -> None:
+def init_db(user: str) -> None:
     """Initialize a database for user"""
     db_exec('''
         CREATE TABLE IF NOT EXISTS items (
@@ -74,35 +41,28 @@ def init_db(token: str) -> None:
             type TEXT NOT NULL,
             name TEXT NOT NULL,
             content BLOB NOT NULL
-        )''', token=token)
+        )''', user)
 
-def path_to(item_id: str) -> str:
-    return f"data/files/{item_id}"
-
-def is_valid_token(token: str) -> bool:
+def validate_credentials(credentials: str) -> bool:
     """Read data/tokens.txt, check if token is one of lines"""
-
-    try:
-        with open("data/tokens.txt", "r", encoding="utf-8") as file:
-            for line in file:
-                if line.strip() == token:
-                    return True
-    except FileNotFoundError:
-        # tokens.txt doesn't exist
-        log.fatal("PUT TOKENS IN data/tokens.txt !!!")
+    with open("data/tokens.txt", "xr", encoding="utf-8") as file:
+        for line in file:
+            if line == credentials: return True
     
     return False
 
-def is_valid_query(query: str) -> tuple[bool, str]:
+def validate_query(query: str) -> bool:
     query = query.upper() # <- 'create' == 'CREATE'
     blacklist = [
-        "CREATE", "ALTER", "DROP", "UPDATE", "REPLACE", "UPSERT",
-        "ATTACH", "DETACH", "VACUUM", "PRAGMA", "CAST", "UNION"
+        "DROP", "ALTER", "CREATE", "EXPLAIN", "UPSERT", 
+        "ATTACH", "DETACH", "PRAGMA", "READFILE"
     ]
     for banned in blacklist:
-        if banned in query:
-            return (False, banned)
-    return (True, "")
+        if banned in query: return False
+    return True
+
+
+app = FastAPI()
 
 @app.head("/api")
 async def root():
@@ -111,53 +71,37 @@ async def root():
 
 @app.post("/api")
 async def api(request: Request):
-    """Execute a SQL query sent in text/plain, return result in json"""
-
+    """Execute a SQL query sent in text/plain, return result in application/json"""
     content_type = request.headers.get("Content-Type")
-    auth_token = request.headers.get("Authorization")
+    credentials = request.headers.get("Authorization")
+    content = (await request.body()).decode("utf-8")
     
-    if (auth_token is None) or (not is_valid_token(auth_token)):
-        raise HTTPException(status_code=401,
-                            detail="Invalid auth token")
-
     if content_type not in ("text/plain", "text/plain; charset=utf-8"):
-        raise HTTPException(status_code=400,
-                            detail="Invalid Conent-Type")
+        raise HTTPException(status_code=400, detail="Malformed request")
     
-    content = await request.body()
-    content = content.decode("utf-8")
-    
-    validation_res = is_valid_query(content)
-    if validation_res[0] is False:
-        raise HTTPException(status_code=422,
-                            detail=f"Forbidden command: {validation_res[1]}")
+    if credentials is None or not validate_credentials(credentials):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    if not validate_query(content):
+        raise HTTPException(status_code=422, detail="Query contains forbidden elements")
 
     try:
-        init_db(auth_token)
-        result = db_exec(content, auth_token)
-        # Convert BLOB bytes to hex string
+        result = db_exec(content, credentials.split(":")[0])
+        # Convert binary to base64
         for row in result:
-            if 'content' in row.keys():
-                row['content'] = row['content'].hex()
-        return Response(media_type="application/json",
-                    content=json.dumps(result))
+            if 'content' in row.keys(): row['content'] = b64encode(row['content'])
+        return Response(media_type="application/json", content=json.dumps(result))
     except sqlite3.Error as e:
         log.exception(e)
-        raise HTTPException(status_code=422,
-                            detail=f"Invalid query")
+        raise HTTPException(status_code=400, detail="Malformed query")
     except Exception as e:
         log.exception(e)
-        raise HTTPException(status_code=500,
-                            detail="Internal server error")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
+app.add_middleware(GZipMiddleware)
+cert_choice = input("Renew SSL sertificates? (y/n/http): ")
 
-
-if __name__ == "__main__":
-    app.add_middleware(GZipMiddleware)
-    cert_info = {"certfile": None, "keyfile": None}
-
-    cert_choice = input("Renew SSL sertificates? (y/n/http): ")
-    if cert_choice == 'http':
+if cert_choice == 'http':
         uvicorn.run(
             app,
             host="0.0.0.0",
@@ -166,45 +110,38 @@ if __name__ == "__main__":
         )
         exit(0)
 
-    elif cert_choice == 'y':
-        domain    = input("Your domain:\n")
-        email     = input("Your emai:\n")
+else:
+    domain = input("Your domain:\n")
 
-        # Get SSL certificates
-        try:
-            if domain and email:
-                cert_info = get_cert(domain, email)
-                log.info(f"SSL certificates loaded for {domain}")
-            else:
-                log.warning(f"Domain or email not specified, http-only")
-        except Exception as e:
-            log.error(f"Failed to load SSL certificates: \n{e}")
+    # Get SSL certificates
+    try:
+        if not domain or not domain.find("."):
+            log.fatal("Invalid domain specified")
             exit(1)
 
-    elif cert_choice == 'n':
-        domain = input("Your domain:\n")
-        
-        # Use existing SSL certificates from certbot
-        cert_path = f"/etc/letsencrypt/live/{domain}/fullchain.pem"
-        key_path = f"/etc/letsencrypt/live/{domain}/privkey.pem"
-        
-        # Check if certificate files exist
-        if not os.path.exists(cert_path) or not os.path.exists(key_path):
-            log.error(f"SSL certificates not found for domain {domain}")
-            log.error("Please ensure certificates exist or run with 'y' to generate new ones")
-            exit(1)
-        
-        cert_info = {
-            "certfile": cert_path,
-            "keyfile": key_path
-        }
-        log.info(f"Using existing SSL certificates for {domain}")
+        if cert_choice == "y":
+            args = ["certonly", "--standalone", "--agree-tos", "--non-interactive", "-d", domain]
+            rv = os.spawnv(os.P_WAIT, "certbot", args)
+            if (rv != 0): 
+                log.critical(f"`certbot` returned f{rv}; look higher")
+                exit(1)
+        elif cert_choice == "n":
+            if not os.path.exists(f"/etc/letsencrypt/live/{domain}/fullchain.pem"):
+                log.error(f"SSL certificates not found for domain {domain}")
+                log.error("Please ensure certificates exist or run with 'y' to generate new ones")
+                exit(1)
+        log.info(f"Received SSL certificates for {domain}")
+            
+        uvicorn.run(
+            app,
+            host="0.0.0.0",
+            port=443,
+            ssl_certfile=f"/etc/letsencrypt/live/{domain}/fullchain.pem",
+            ssl_keyfile=f"/etc/letsencrypt/live/{domain}/privkey.pem",
+            timeout_keep_alive=10
+        )
+    except Exception as e:
+        log.error(f"Failed to load SSL certificates: \n{e}")
+        exit(1)
 
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=443,
-        ssl_certfile=cert_info["certfile"],
-        ssl_keyfile=cert_info["keyfile"],
-        timeout_keep_alive=10
-    )
+
