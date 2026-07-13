@@ -8,7 +8,7 @@ To run over **http**:
 - `./main.py http`
 
 To run over **https**:
-- Install `certbot`
+- Install `certbot` (or edit the code to use other certificates)
 - `./main.py https <your_domain>`
 
 ## Database Schema

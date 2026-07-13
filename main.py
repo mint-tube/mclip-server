@@ -2,8 +2,7 @@
 from fastapi import FastAPI, HTTPException, Response, Request
 from fastapi.middleware.gzip import GZipMiddleware
 from base64 import b64encode, b64decode
-from typing import Any
-import sqlite3, json, os, uvicorn, base64, logging, sys
+import sqlite3, json, os, uvicorn, subprocess, logging, sys
 
 class ColoredFormatter(logging.Formatter):
     COLORS = {
@@ -24,7 +23,7 @@ handler.setFormatter(ColoredFormatter("%(levelname)s:     %(message)s"))
 logging.basicConfig( level=logging.INFO, handlers=[handler] )
 log = logging.getLogger()
 
-def db_exec(query: str, user: str) -> list[dict[str, Any]]:
+def db_exec(query: str, user: str) -> list[dict]:
     """Execute a query in data/<token>.db"""
     conn = sqlite3.connect(f"data/{user}.db", autocommit=True)
     conn.row_factory = sqlite3.Row 
@@ -99,49 +98,43 @@ async def api(request: Request):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 app.add_middleware(GZipMiddleware)
-cert_choice = input("Renew SSL sertificates? (y/n/http): ")
 
-if cert_choice == 'http':
-        uvicorn.run(
-            app,
-            host="0.0.0.0",
-            port=80,
-            timeout_keep_alive=10
-        )
-        exit(0)
+if (len(sys.argv) == 1):
+    log.fatal("Protocol not specified (http/https).")
+    exit(1)
+
+if sys.argv[1] == "http":
+    if (len(sys.argv) > 2): log.info("Extra arguments are ignored")
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=80,
+        timeout_keep_alive=10
+    )
+
+elif sys.argv[1] == "https":
+    if (len(sys.argv) == 2):
+        log.fatal("Domain not specified.")
+        exit(1)
+    if (len(sys.argv) > 3): log.info("Extra arguments are ignored")
+    
+    domain = sys.argv[2]
+
+    if not os.path.exists(f"/etc/letsencrypt/live/{domain}/fullchain.pem"):
+        rv = subprocess.run(["certbot", "certonly", "--standalone", "--agree-tos",
+                             "--non-interactive", "-d", domain, "--silent"])
+        if rv.returncode: exit(1)
+        log.info(f"Received SSL certificates for {domain}")
+    
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=443,
+        ssl_certfile=f"/etc/letsencrypt/live/{domain}/fullchain.pem",
+        ssl_keyfile=f"/etc/letsencrypt/live/{domain}/privkey.pem",
+        timeout_keep_alive=10
+    )
 
 else:
-    domain = input("Your domain:\n")
-
-    # Get SSL certificates
-    try:
-        if not domain or not domain.find("."):
-            log.fatal("Invalid domain specified")
-            exit(1)
-
-        if cert_choice == "y":
-            args = ["certonly", "--standalone", "--agree-tos", "--non-interactive", "-d", domain]
-            rv = os.spawnv(os.P_WAIT, "certbot", args)
-            if (rv != 0): 
-                log.critical(f"`certbot` returned f{rv}; look higher")
-                exit(1)
-        elif cert_choice == "n":
-            if not os.path.exists(f"/etc/letsencrypt/live/{domain}/fullchain.pem"):
-                log.error(f"SSL certificates not found for domain {domain}")
-                log.error("Please ensure certificates exist or run with 'y' to generate new ones")
-                exit(1)
-        log.info(f"Received SSL certificates for {domain}")
-            
-        uvicorn.run(
-            app,
-            host="0.0.0.0",
-            port=443,
-            ssl_certfile=f"/etc/letsencrypt/live/{domain}/fullchain.pem",
-            ssl_keyfile=f"/etc/letsencrypt/live/{domain}/privkey.pem",
-            timeout_keep_alive=10
-        )
-    except Exception as e:
-        log.error(f"Failed to load SSL certificates: \n{e}")
-        exit(1)
-
-
+    log.fatal("Unsupported protocol - choose http or https")
+    exit(1)
