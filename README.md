@@ -2,13 +2,14 @@
 
 ## Setup
 
-Install `fastapi` for whatever python environment you are using
+`pip install -r requirements.txt`  
+(fastapi, uvicorn, slowapi)
   
 To run over **http**:   
 - `./main.py http`
 
 To run over **https**:
-- Install `certbot` (or edit the code to use other certificates)
+- Get a Let's encrypt SSL certificate (`sudo certbot certonly --standalone --agree-tos`)
 - `./main.py https <your_domain>`
 
 ## Database Schema
@@ -31,12 +32,12 @@ CREATE TABLE items (
 
 ### Health Check
 - **HEAD** `/api`
-- **Description:** Server health check
-- **Response Body:** `healthy`
-
+- **Description:** Server status check
+- **Status Codes:**
+  - 204 No Content: **Server is working normally**
 
 ### SQL Query
-- **POST** `/api`
+- **POST** `/api/query`
 - **Description:** Execute SQL query in the database
 - **Request:**  
   ```yaml
@@ -68,14 +69,45 @@ CREATE TABLE items (
   ```
   Note: `content` is a base64-encoded UTF-8 string.
 - **Status codes:**
-  - 200 OK: **Query executed successfully**
-  - 400 Bad Request: **Malformed request**
-  - 400 Bas Request: **Malformed query**
+  - 200 OK: **Success**
+  - 400 Bad Request: **Malformed query**
   - 401 Unauthorized: **Invalid credentials**
+  - 415 Unsupported Media Type: **Invalid Content-Type header**
   - 422 Unprocessable Content: **Query contains forbidden elements**
   - 500 Internal Server Error: **Try again**
 
-### Suggested Operations
+### Create account
+- **POST** `/api/account`
+- **Description:** Create an account with given name and password
+- **Request:**
+  ```yaml
+  Authorization: Basic base64(<user>:<password>)
+  ```
+  Note: User's name and password must consist of 3 to 100 letters, digits, underscores, periods and dashes.
+- **Status codes:**
+  - 201 Created: **Success**
+  - 400 Bad Request: **Invalid Authtorization header**
+  - 409 Conflict: **Name not available**
+  - 422 Unprocessable Content: **Unacceptable name or password**
+
+### Change password
+- **PATCH** `/api/account`
+- **Description:** Change password to account
+- **Request:**
+  ```yaml
+  Authorization: Basic base64(<user>:<old_password>)
+  Content-Type: text/plain; charset=utf-8
+  ```
+  ```yaml
+  <new_password>
+  ```
+- **Status codes:**
+  - 204 No Content: **Success**
+  - 401 Unauthorized: **Invalid credentials**
+  - 415 Unsupported Media Type: **Invalid Content-Type header**
+  - 422 Unprocessable Content: **New password is unacceptable**
+
+## Suggested Operations
 
 #### Read Operations
 ```sql
@@ -114,7 +146,7 @@ INSERT INTO items (id, type, name, content) VALUES ('9159ab07d29945b42ac62a68', 
 DELETE FROM items WHERE id = '550e8400e29b41d4a7164466';
 
 -- Delete items by ID prefix
-DELETE FROM items WHERE id LIKE '550e84*';
+DELETE FROM items WHERE id LIKE '550e84%';
 
 -- Delete all items
 DELETE FROM items;
