@@ -60,7 +60,7 @@ def init_db(username: str) -> None:
         )""", username)
 
 def parse_credentials(request: Request) -> str:
-    """Return the credentials pair"""
+    """Return the credentials pair. Raise **HTTP 401** if malformed."""
     credentials = request.headers.get("Authorization")
     try:
         if credentials is None:
@@ -79,7 +79,7 @@ def validate_query(query: str) -> None:
     ]
     for banned in blacklist:
         if banned in query:
-            HTTPException(422, "Query contains forbidden elements")\
+            raise HTTPException(422, "Query contains forbidden elements")
 
 def verify_content_type(request: Request, starts: str) -> None:
     """Raise **HTTP 415** if Content-Type doesn't start with `starts`"""
@@ -87,12 +87,12 @@ def verify_content_type(request: Request, starts: str) -> None:
     if content_type is None or content_type.startswith(starts):
         raise HTTPException(415, "Invalid Content-Type header")
 
-def verify_credentials( credentials: str) -> None:
+def verify_credentials(credentials: str) -> None:
     """Raise **HTTP 401** if credentials pair is invalid"""
     with open("data/users.txt", "r", encoding="utf-8") as users:
-            for user in users:
-                if user == credentials:
-                    return
+        for user in users:
+            if user == credentials:
+                return
     raise HTTPException(401, "Invalid credentials")
 
 
@@ -169,16 +169,24 @@ async def change_password(request: Request):
     credentials = parse_credentials(request)
 
     try:
-        assert re.match(r"^[a-zA-Z0-9_.-]+$", (await request.body()).decode())
+        assert re.match(r"^[a-zA-Z0-9_.-]{3,100}$", (await request.body()).decode())
     except Exception as e:
-        raise HTTPException(422, "New password in unacceptable")
+        raise HTTPException(422, "New password in unacceptable") from e
 
     lines = []
     updated = False
-    with open("data/users.txt", "r", encoding="utf-8") as file:
-        for line in file:
-            init_db(line.split(":")[0])
+    with open("data/users.txt", "r", encoding="utf-8") as users:
+        for user in users:
+            if credentials == user:
+                user = user.split(":")[0] + ":" + (await request.body()).decode("utf-8")
+                updated = True
+            lines.append(user)
 
+    if not updated:
+        raise HTTPException(401, "Invalid credentials")
+
+    with open("data/users.txt", "w", encoding="utf-8") as users:
+        users.writelines(lines)
 
 # ------- MAIN -------
 
