@@ -84,7 +84,7 @@ def validate_query(query: str) -> None:
 def verify_content_type(request: Request, starts: str) -> None:
     """Raise **HTTP 415** if Content-Type doesn't start with `starts`"""
     content_type = request.headers.get("Content-Type")
-    if content_type is None or content_type.startswith(starts):
+    if content_type is None or not content_type.startswith(starts):
         raise HTTPException(415, "Invalid Content-Type header")
 
 def verify_credentials(credentials: str) -> None:
@@ -100,7 +100,7 @@ limiter = Limiter(key_func=get_remote_address)
 app = FastAPI()
 
 @app.head("/api")
-@limiter.limit("5/minute")
+@limiter.limit("8/minute")
 async def root(request: Request): # pylint: disable=unused-argument
     """Status check endpoint"""
     return Response(status_code=204)
