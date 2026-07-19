@@ -6,6 +6,7 @@ import os
 import logging
 import sys
 import re
+import bcrypt
 from base64 import b64encode, b64decode
 
 import uvicorn
@@ -91,7 +92,7 @@ def validate_content_type(request: Request, starts: str) -> None:
         raise HTTPException(415, "Invalid Content-Type header")
 
 
-app = FastAPI()
+app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)
 limiter = Limiter(key_func=get_remote_address)
 users: set[str]
 
