@@ -101,7 +101,7 @@ app = FastAPI()
 
 @app.head("/api")
 @limiter.limit("5/minute")
-async def root(_request: Request):
+async def root(request: Request): # pylint: disable=unused-argument
     """Status check endpoint"""
     return Response(status_code=204)
 
