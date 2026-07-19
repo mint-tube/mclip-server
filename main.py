@@ -58,11 +58,11 @@ def init_db(username: str) -> None:
             name TEXT NOT NULL,
             content BLOB NOT NULL
         )""", username)
-    
+
 def parse_credentials(request: Request) -> str:
     """Return the credentials pair. Raise **HTTP 401** if malformed."""
     credentials = request.headers.get("Authorization")
-    
+
     try:
         if credentials is None or not credentials.startswith("Basic "):
             raise RuntimeError
@@ -159,7 +159,7 @@ async def register(request: Request):
         users.write(auth + "\n")
     init_db(name)
 
-    return Response("Success", 201)
+    return Response(201)
 
 @app.patch("/api/account")
 @limiter.limit("4/hour")
@@ -167,20 +167,19 @@ async def change_password(request: Request):
     """Change user's password"""
     validate_content_type(request, "text/plain")
     credentials = parse_credentials(request)
+    content = (await request.body()).decode()
 
     try:
-        assert re.match(r"^[a-zA-Z0-9_.-]{3,100}$", (await request.body()).decode())
+        assert re.match(r"^[a-zA-Z0-9_.-]{3,100}$", content)
     except Exception as e:
-        raise HTTPException(422, "New password in unacceptable") from e
+        raise HTTPException(422, "New password is unacceptable") from e
 
     lines = []
     updated = False
-    log.error(credentials)
     with open("data/users.txt", "r", encoding="utf-8") as users:
         for user in users:
-            log.error(user)
             if credentials == user.strip("\n "):
-                user = user.split(":")[0] + ":" + (await request.body()).decode("utf-8")
+                user = user.split(":")[0] + ":" + content
                 updated = True
             lines.append(user)
 

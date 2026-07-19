@@ -5,7 +5,7 @@
 `pip install -r requirements.txt`  
 (fastapi, uvicorn, slowapi)
   
-To run over **http**:   
+To run over **http**:
 - `./main.py http`
 
 To run over **https**:
@@ -16,6 +16,7 @@ To run over **https**:
 ```sql
 CREATE TABLE items (
     id TEXT PRIMARY KEY,
+    access TEXT NOT NULL
     type TEXT NOT NULL,
     name TEXT NOT NULL,
     content BLOB NOT NULL
@@ -23,6 +24,7 @@ CREATE TABLE items (
 ```
 
 - `id` should be unique - collisions will be treated as a client error
+- `access` can be either 'public' or 'private'
 - `type` can be either 'text' or 'file`
 - `name` stores the name of the file or text note
 - `content` is binary; use X'...' to insert hex-encoded data
@@ -30,11 +32,13 @@ CREATE TABLE items (
 
 ## API Endpoints
 
+A JSON message is sent with status codes 4XX and 5XX.
+
 ### Health Check
 - **HEAD** `/api`
 - **Description:** Server status check
 - **Status Codes:**
-  - 204 No Content: **Server is working normally**
+  - 204 OK
 
 ### SQL Query
 - **POST** `/api/query`
@@ -69,7 +73,7 @@ CREATE TABLE items (
   ```
   Note: `content` is a base64-encoded UTF-8 string.
 - **Status codes:**
-  - 200 OK: **Success**
+  - 200 OK
   - 400 Bad Request: **Malformed query**
   - 401 Unauthorized: **Invalid credentials**
   - 415 Unsupported Media Type: **Invalid Content-Type header**
@@ -85,7 +89,7 @@ CREATE TABLE items (
   ```
   Note: User's name and password must consist of 3 to 100 letters, digits, underscores, periods and dashes.
 - **Status codes:**
-  - 201 Created: **Success**
+  - 201 Created
   - 400 Bad Request: **Invalid Authtorization header**
   - 409 Conflict: **Name not available**
   - 422 Unprocessable Content: **Unacceptable name or password**
@@ -102,7 +106,7 @@ CREATE TABLE items (
   <new_password>
   ```
 - **Status codes:**
-  - 204 No Content: **Success**
+  - 204 No Content
   - 401 Unauthorized: **Invalid credentials**
   - 415 Unsupported Media Type: **Invalid Content-Type header**
   - 422 Unprocessable Content: **New password is unacceptable**
