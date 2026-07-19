@@ -14,6 +14,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
+
 class ColoredFormatter(logging.Formatter):
     """Formatter matching FastAPI logs"""
     COLORS = {
@@ -34,6 +35,7 @@ handler = logging.StreamHandler(sys.stdout)
 handler.setFormatter(ColoredFormatter("%(levelname)s:     %(message)s"))
 logging.basicConfig( level=logging.INFO, handlers=[handler] )
 log = logging.getLogger()
+
 
 def db_exec(query: str, username: str) -> list[dict]:
     """Execute a query in data/<username>.db"""
@@ -82,14 +84,6 @@ def validate_query(query: str) -> None:
         if banned in query:
             raise HTTPException(422, "Query contains forbidden elements")
 
-def validate_credentials(credentials: str) -> None:
-    """Raise **HTTP 401** if credentials are invalid"""
-    with open("data/users.txt", "r", encoding="utf-8") as users:
-        for user in users:
-            if user == credentials:
-                return
-    raise HTTPException(401, "Invalid credentials")
-
 def validate_content_type(request: Request, starts: str) -> None:
     """Raise **HTTP 415** if Content-Type doesn't start with `starts`"""
     content_type = request.headers.get("Content-Type")
@@ -97,14 +91,15 @@ def validate_content_type(request: Request, starts: str) -> None:
         raise HTTPException(415, "Invalid Content-Type header")
 
 
-limiter = Limiter(key_func=get_remote_address)
 app = FastAPI()
+limiter = Limiter(key_func=get_remote_address)
+users: set[str]
 
 @app.head("/api")
 @limiter.limit("10/minute")
 async def root(request: Request): # pylint: disable=unused-argument
     """Status check endpoint"""
-    return Response(204)
+    return Response(status_code=204)
 
 @app.post("/api/query")
 @limiter.limit("90/minute")
@@ -112,7 +107,8 @@ async def api(request: Request):
     """Execute a text/plain SQL query , return application/json result"""
     validate_content_type(request, "text/plain")
     credentials = parse_credentials(request)
-    validate_credentials(credentials)
+    if credentials not in users:
+        raise HTTPException(401, "Invalid credentials")
 
     try:
         content = (await request.body()).decode()
@@ -135,7 +131,7 @@ async def api(request: Request):
 @app.post("/api/account")
 @limiter.limit("4/hour")
 async def register(request: Request):
-    """Create a new user with given name and password"""
+    """Create a new account with given name and password"""
     auth = request.headers.get("Authorization")
     if auth is None or not auth.startswith("Basic "):
         raise HTTPException(400, "Invalid Authtorization header")
@@ -151,15 +147,13 @@ async def register(request: Request):
         raise HTTPException(422, "Unacceptable name or password")
 
     name = auth.split(":")[0]
-    with open("data/users.txt", "a+", encoding="utf-8") as users:
-        users.seek(0, os.SEEK_SET)
-        for user in users:
-            if name == user.split(":")[0]:
-                raise HTTPException(409, "Name not available")
-        users.write(auth + "\n")
+    for user in users:
+        if name == user.split(":")[0]:
+            raise HTTPException(409, "Name not available")
+    users.add(auth)
     init_db(name)
 
-    return Response(201)
+    return Response(status_code=201)
 
 @app.patch("/api/account")
 @limiter.limit("4/hour")
@@ -174,68 +168,75 @@ async def change_password(request: Request):
     except Exception as e:
         raise HTTPException(422, "New password is unacceptable") from e
 
-    lines = []
-    updated = False
-    with open("data/users.txt", "r", encoding="utf-8") as users:
-        for user in users:
-            if credentials == user.strip("\n "):
-                user = user.split(":")[0] + ":" + content
-                updated = True
-            lines.append(user)
-
-    if not updated:
+    if credentials not in users:
         raise HTTPException(401, "Invalid credentials")
 
-    with open("data/users.txt", "w", encoding="utf-8") as users:
-        users.writelines(lines)
+    users.remove(credentials)
+    users.add(credentials.split(":")[0] + ":" + content)
 
-    return Response(204)
+    return Response(status_code=204)
 
-# ------- MAIN -------
+@app.delete("/api/account")
+@limiter.limit("3/hour")
+async def delete_account(request: Request):
+    """Delete an account"""
+    credentials = parse_credentials(request)
+    if credentials not in users:
+        raise HTTPException(401, "Invalid credentials")
 
-app.add_middleware(GZipMiddleware)
+    users.remove(credentials)
+    name = credentials.split(":")[0]
+    os.remove(f"data/{name}.db")
 
-os.makedirs("data", exist_ok=True)
-with open("data/users.txt", "a+", encoding="utf-8") as file:
-    file.seek(0, os.SEEK_SET)
-    for line in file:
-        init_db(line.split(":")[0])
+    return Response(status_code=204)
 
-if len(sys.argv) == 1:
-    log.fatal("Protocol not specified (http/https).")
-    exit(1)
 
-if sys.argv[1] == "http":
-    if len(sys.argv) > 2:
-        log.info("Extra arguments are ignored")
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=80,
-        timeout_keep_alive=10
-    )
+if __name__ == "__main__":
+    app.add_middleware(GZipMiddleware)
 
-elif sys.argv[1] == "https":
-    if len(sys.argv) == 2:
-        log.fatal("Domain not specified.")
-        exit(1)
-    if len(sys.argv) > 3:
-        log.info("Extra arguments are ignored.")
+    os.makedirs("data", exist_ok=True)
+    try:
+        with open("data/users.txt", "r", encoding="utf-8") as f:
+            users = set(line.strip("\n") for line in f if line.strip())
+    except FileNotFoundError:
+        users = set()
 
-    domain = sys.argv[2]
+    if len(sys.argv) == 1:
+        log.fatal("Protocol not specified (http/https).")
+        sys.exit(1)
 
-    if not os.path.exists(f"/etc/letsencrypt/live/{domain}/fullchain.pem"):
-        log.fatal("SSL certificate is required. See README.md.")
+    if sys.argv[1] == "http":
+        if len(sys.argv) > 2:
+            log.info("Extra arguments are ignored")
+        uvicorn.run(
+            app,
+            host="0.0.0.0",
+            port=80,
+            timeout_keep_alive=10
+        )
+    elif sys.argv[1] == "https":
+        if len(sys.argv) == 2:
+            log.fatal("Domain not specified.")
+            sys.exit(1)
+        if len(sys.argv) > 3:
+            log.info("Extra arguments are ignored.")
 
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=443,
-        ssl_certfile=f"/etc/letsencrypt/live/{domain}/fullchain.pem",
-        ssl_keyfile=f"/etc/letsencrypt/live/{domain}/privkey.pem",
-        timeout_keep_alive=10
-    )
+        domain = sys.argv[2]
 
-else:
-    log.fatal("Unsupported protocol - choose http or https")
-    exit(1)
+        if not os.path.exists(f"/etc/letsencrypt/live/{domain}/fullchain.pem"):
+            log.fatal("SSL certificate is required. See README.md.")
+
+        uvicorn.run(
+            app,
+            host="0.0.0.0",
+            port=443,
+            ssl_certfile=f"/etc/letsencrypt/live/{domain}/fullchain.pem",
+            ssl_keyfile=f"/etc/letsencrypt/live/{domain}/privkey.pem",
+            timeout_keep_alive=10
+        )
+    else:
+        log.fatal("Unsupported protocol - choose http or https")
+        sys.exit(1)
+
+    with open("data/users.txt", "w", encoding="utf-8") as f:
+        f.writelines(users)
