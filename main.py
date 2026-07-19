@@ -58,14 +58,15 @@ def init_db(username: str) -> None:
             name TEXT NOT NULL,
             content BLOB NOT NULL
         )""", username)
-
+    
 def parse_credentials(request: Request) -> str:
     """Return the credentials pair. Raise **HTTP 401** if malformed."""
     credentials = request.headers.get("Authorization")
+    
     try:
-        if credentials is None:
+        if credentials is None or not auth.startswith("Basic "):
             raise RuntimeError
-        credentials = b64decode(credentials, validate=True).decode()
+        credentials = b64decode(credentials[6:], validate=True).decode()
         return credentials
     except Exception as e:
         raise HTTPException(401, "Invalid credentials") from e
@@ -81,38 +82,37 @@ def validate_query(query: str) -> None:
         if banned in query:
             raise HTTPException(422, "Query contains forbidden elements")
 
-def verify_content_type(request: Request, starts: str) -> None:
+def validate_credentials(credentials: str) -> None:
+    """Raise **HTTP 401** if credentials are invalid"""
+    with open("data/users.txt", "r", encoding="utf-8") as users:
+        for user in users:
+            if user == credentials:
+                return credentials
+    raise HTTPException(401, "Invalid credentials")
+
+def validate_content_type(request: Request, starts: str) -> None:
     """Raise **HTTP 415** if Content-Type doesn't start with `starts`"""
     content_type = request.headers.get("Content-Type")
     if content_type is None or not content_type.startswith(starts):
         raise HTTPException(415, "Invalid Content-Type header")
-
-def verify_credentials(credentials: str) -> None:
-    """Raise **HTTP 401** if credentials pair is invalid"""
-    with open("data/users.txt", "r", encoding="utf-8") as users:
-        for user in users:
-            if user == credentials:
-                return
-    raise HTTPException(401, "Invalid credentials")
 
 
 limiter = Limiter(key_func=get_remote_address)
 app = FastAPI()
 
 @app.head("/api")
-@limiter.limit("8/minute")
+@limiter.limit("10/minute")
 async def root(request: Request): # pylint: disable=unused-argument
     """Status check endpoint"""
-    return Response(status_code=204)
+    return Response("Server is working normally", 204)
 
 @app.post("/api/query")
 @limiter.limit("90/minute")
 async def api(request: Request):
     """Execute a text/plain SQL query , return application/json result"""
-    verify_content_type(request, "text/plain")
-
+    validate_content_type(request, "text/plain")
     credentials = parse_credentials(request)
-    verify_credentials(credentials)
+    validate_credential(credentials)
 
     try:
         content = (await request.body()).decode()
@@ -135,15 +135,15 @@ async def api(request: Request):
         raise HTTPException(500, "Internal server error") from e
 
 @app.post("/api/account")
-@limiter.limit("3/hour")
+@limiter.limit("4/hour")
 async def register(request: Request):
     """Create a new user with given name and password"""
-    auth = request.headers.get("Authtorization")
-    if auth is None:
+    auth = request.headers.get("Authorization")
+    if auth is None or not auth.startswith("Basic "):
         raise HTTPException(400, "Invalid Authtorization header")
 
     try:
-        auth = b64decode(auth).decode("utf-8")
+        auth = b64decode(auth[6:]).decode("utf-8")
         if auth.find(":") == -1:
             raise RuntimeError
     except Exception as e:
@@ -158,14 +158,16 @@ async def register(request: Request):
         for user in users:
             if name == user.split(":")[0]:
                 raise HTTPException(409, "Name not available")
-        users.write("\n" + auth)
+        users.write(auth)
     init_db(name)
 
+    return Response("Success", 201)
+
 @app.patch("/api/account")
-@limiter.limit("2/hour")
+@limiter.limit("4/hour")
 async def change_password(request: Request):
     """Change user's password"""
-    verify_content_type(request, "text/plain")
+    validate_content_type(request, "text/plain")
     credentials = parse_credentials(request)
 
     try:
@@ -187,6 +189,8 @@ async def change_password(request: Request):
 
     with open("data/users.txt", "w", encoding="utf-8") as users:
         users.writelines(lines)
+
+    return Response("Success", 204)
 
 # ------- MAIN -------
 
