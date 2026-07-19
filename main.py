@@ -64,7 +64,7 @@ def parse_credentials(request: Request) -> str:
     credentials = request.headers.get("Authorization")
     
     try:
-        if credentials is None or not auth.startswith("Basic "):
+        if credentials is None or not credentials.startswith("Basic "):
             raise RuntimeError
         credentials = b64decode(credentials[6:], validate=True).decode()
         return credentials
@@ -87,7 +87,7 @@ def validate_credentials(credentials: str) -> None:
     with open("data/users.txt", "r", encoding="utf-8") as users:
         for user in users:
             if user == credentials:
-                return credentials
+                return
     raise HTTPException(401, "Invalid credentials")
 
 def validate_content_type(request: Request, starts: str) -> None:
@@ -112,7 +112,7 @@ async def api(request: Request):
     """Execute a text/plain SQL query , return application/json result"""
     validate_content_type(request, "text/plain")
     credentials = parse_credentials(request)
-    validate_credential(credentials)
+    validate_credentials(credentials)
 
     try:
         content = (await request.body()).decode()
@@ -128,10 +128,8 @@ async def api(request: Request):
                 row["content"] = b64encode(row["content"]).decode()
         return Response(media_type="application/json", content=json.dumps(result))
     except sqlite3.Error as e:
-        log.exception(e)
         raise HTTPException(400, "Malformed query") from e
     except Exception as e:
-        log.exception(e)
         raise HTTPException(500, "Internal server error") from e
 
 @app.post("/api/account")
@@ -177,8 +175,10 @@ async def change_password(request: Request):
 
     lines = []
     updated = False
+    log.error(credentials)
     with open("data/users.txt", "r", encoding="utf-8") as users:
         for user in users:
+            log.error(user)
             if credentials == user:
                 user = user.split(":")[0] + ":" + (await request.body()).decode("utf-8")
                 updated = True
