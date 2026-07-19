@@ -104,7 +104,7 @@ app = FastAPI()
 @limiter.limit("10/minute")
 async def root(request: Request): # pylint: disable=unused-argument
     """Status check endpoint"""
-    return Response("Server is working normally", 204)
+    return Response(204)
 
 @app.post("/api/query")
 @limiter.limit("90/minute")
@@ -156,7 +156,7 @@ async def register(request: Request):
         for user in users:
             if name == user.split(":")[0]:
                 raise HTTPException(409, "Name not available")
-        users.write(auth)
+        users.write(auth + "\n")
     init_db(name)
 
     return Response("Success", 201)
@@ -179,7 +179,7 @@ async def change_password(request: Request):
     with open("data/users.txt", "r", encoding="utf-8") as users:
         for user in users:
             log.error(user)
-            if credentials == user:
+            if credentials == user.strip("\n "):
                 user = user.split(":")[0] + ":" + (await request.body()).decode("utf-8")
                 updated = True
             lines.append(user)
@@ -190,7 +190,7 @@ async def change_password(request: Request):
     with open("data/users.txt", "w", encoding="utf-8") as users:
         users.writelines(lines)
 
-    return Response("Success", 204)
+    return Response(204)
 
 # ------- MAIN -------
 
