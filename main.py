@@ -6,9 +6,9 @@ import os
 import logging
 import sys
 import re
-import bcrypt
 from base64 import b64encode, b64decode
 
+import bcrypt
 import uvicorn
 from fastapi import FastAPI, HTTPException, Response, Request
 from fastapi.middleware.gzip import GZipMiddleware
@@ -31,12 +31,13 @@ class ColoredFormatter(logging.Formatter):
             record.levelname + '\033[0m'
         return super().format(record)
 
-# Configure logger to match FastAPI"s format with colors
+# Configure logger to match FastAPI's format with colors
 handler = logging.StreamHandler(sys.stdout)
 handler.setFormatter(ColoredFormatter("%(levelname)s:     %(message)s"))
-logging.basicConfig( level=logging.INFO, handlers=[handler] )
+logging.basicConfig(level=logging.INFO, handlers=[handler])
 log = logging.getLogger()
 
+users: dict[str, str] = {}
 
 def db_exec(query: str, username: str) -> list[dict]:
     """Execute a query in data/<username>.db"""
@@ -62,28 +63,32 @@ def init_db(username: str) -> None:
             content BLOB NOT NULL
         )""", username)
 
-def parse_credentials(request: Request) -> str:
-    """Return the credentials pair. Raise **HTTP 401** if malformed."""
+def get_username(request: Request) -> str:
+    """
+    Validate the credentials and return username.
+    Raises HTTP 401 if malformed or invalid password.
+    """
     credentials = request.headers.get("Authorization")
-
     try:
         if credentials is None or not credentials.startswith("Basic "):
             raise RuntimeError
         credentials = b64decode(credentials[6:], validate=True).decode()
-        return credentials
     except Exception as e:
         raise HTTPException(401, "Invalid credentials") from e
 
-def validate_query(query: str) -> None:
-    """Raise **HTTP 422** if query is not safe for execution"""
-    query = query.upper() # <- "create" == "CREATE"
-    blacklist = [
-        "DROP", "ALTER", "CREATE", "EXPLAIN", "UPSERT", 
-        "ATTACH", "DETACH", "PRAGMA", "READFILE"
-    ]
-    for banned in blacklist:
-        if banned in query:
-            raise HTTPException(422, "Query contains forbidden elements")
+    if ":" not in credentials:
+        raise HTTPException(401, "Invalid credentials")
+    username, password = credentials.split(":", 1)
+
+    stored_hash = users.get(username)
+
+    if stored_hash is None:
+        raise HTTPException(401, "Invalid credentials")
+
+    if not bcrypt.checkpw(password.encode("utf-8"), stored_hash.encode("utf-8")):
+        raise HTTPException(401, "Invalid credentials")
+
+    return username
 
 def validate_content_type(request: Request, starts: str) -> None:
     """Raise **HTTP 415** if Content-Type doesn't start with `starts`"""
@@ -91,10 +96,8 @@ def validate_content_type(request: Request, starts: str) -> None:
     if content_type is None or not content_type.startswith(starts):
         raise HTTPException(415, "Invalid Content-Type header")
 
-
 app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)
 limiter = Limiter(key_func=get_remote_address)
-users: set[str]
 
 @app.head("/api")
 @limiter.limit("10/minute")
@@ -105,20 +108,17 @@ async def root(request: Request): # pylint: disable=unused-argument
 @app.post("/api/query")
 @limiter.limit("90/minute")
 async def api(request: Request):
-    """Execute a text/plain SQL query , return application/json result"""
+    """Execute a text/plain SQL query, return application/json result"""
     validate_content_type(request, "text/plain")
-    credentials = parse_credentials(request)
-    if credentials not in users:
-        raise HTTPException(401, "Invalid credentials")
+    username = get_username(request)
 
     try:
         content = (await request.body()).decode()
     except UnicodeDecodeError as e:
         raise HTTPException(400, "Malformed query") from e
-    validate_query(content)
 
     try:
-        result = db_exec(content, credentials.split(":")[0])
+        result = db_exec(content, username)
         # Convert binary to base64
         for row in result:
             if "content" in row.keys():
@@ -147,12 +147,13 @@ async def register(request: Request):
     if re.match(r"^[a-zA-Z0-9_.-]{3,100}:[a-zA-Z0-9_.-]{3,100}$", auth) is None:
         raise HTTPException(422, "Unacceptable name or password")
 
-    name = auth.split(":")[0]
-    for user in users:
-        if name == user.split(":")[0]:
-            raise HTTPException(409, "Name not available")
-    users.add(auth)
-    init_db(name)
+    username, password = auth.split(":", 1)
+
+    if users.get(username) is not None:
+        raise HTTPException(409, "Name not available")
+
+    users[username] = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    init_db(username)
 
     return Response(status_code=201)
 
@@ -161,7 +162,7 @@ async def register(request: Request):
 async def change_password(request: Request):
     """Change user's password"""
     validate_content_type(request, "text/plain")
-    credentials = parse_credentials(request)
+    username = get_username(request)
     content = (await request.body()).decode()
 
     try:
@@ -169,25 +170,19 @@ async def change_password(request: Request):
     except Exception as e:
         raise HTTPException(422, "New password is unacceptable") from e
 
-    if credentials not in users:
-        raise HTTPException(401, "Invalid credentials")
-
-    users.remove(credentials)
-    users.add(credentials.split(":")[0] + ":" + content)
+    users[username] = bcrypt.hashpw(content.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
     return Response(status_code=204)
+
 
 @app.delete("/api/account")
 @limiter.limit("3/hour")
 async def delete_account(request: Request):
     """Delete an account"""
-    credentials = parse_credentials(request)
-    if credentials not in users:
-        raise HTTPException(401, "Invalid credentials")
+    username = get_username(request)
 
-    users.remove(credentials)
-    name = credentials.split(":")[0]
-    os.remove(f"data/{name}.db")
+    users.pop(username)
+    os.remove(f"data/{username}.db")
 
     return Response(status_code=204)
 
@@ -198,9 +193,18 @@ if __name__ == "__main__":
     os.makedirs("data", exist_ok=True)
     try:
         with open("data/users.txt", "r", encoding="utf-8") as f:
-            users = set(line.strip("\n") for line in f if line.strip())
+            raw_lines = [line.strip("\n") for line in f if line.strip()]
+        for line in raw_lines:
+            if ":" not in line:
+                log.warning("Malformed line (no colon): %s", line)
+                continue
+            maybe_name, maybe_hash = line.split(":", 1)
+            if not maybe_hash.startswith("$2"):
+                log.warning("Malformed line (not bcrypted): %s", line)
+            else:
+                users[maybe_name] = maybe_hash
     except FileNotFoundError:
-        users = set()
+        log.warning("data/users.txt doesn't exist. New server?")
 
     if len(sys.argv) == 1:
         log.fatal("Protocol not specified (http/https).")
@@ -240,4 +244,4 @@ if __name__ == "__main__":
         sys.exit(1)
 
     with open("data/users.txt", "w", encoding="utf-8") as f:
-        f.writelines(users)
+        f.writelines([f"{user}:{hashed}\n" for (user, hashed) in users])
