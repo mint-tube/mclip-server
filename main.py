@@ -231,4 +231,5 @@ if __name__ == "__main__":
         sys.exit(1)
 
     with open("data/users.txt", "w", encoding="utf-8") as f:
-        f.writelines([f"{user}:{hashed}\n" for (user, hashed) in users])
+        for user, hashed in users.items():
+            f.write(f"{user}:{hashed}\n")
