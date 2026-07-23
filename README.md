@@ -6,13 +6,16 @@
 (fastapi, uvicorn, slowapi, bcrypt)
   
 To run over **http**:
-- `./main.py http`
+- `sudo ./main.py http`
 
 To run over **https**:
 - Get a Let's encrypt SSL certificate (`sudo certbot certonly --standalone --agree-tos`)
-- `./main.py https <your_domain>`
+- `sudo ./main.py https <your_domain>`
+
+You can always change the port numbers. By default, :80 is used for http and :443 for https.
 
 ## Database Schema
+
 ```sql
 CREATE TABLE items (
     id TEXT PRIMARY KEY,

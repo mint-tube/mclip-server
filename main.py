@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Remote server for the `mclip` apps"""
 
 import sqlite3
@@ -8,7 +9,6 @@ import sys
 import re
 from base64 import b64encode, b64decode
 
-import bcrypt
 import uvicorn
 from fastapi import FastAPI, HTTPException, Response, Request
 from fastapi.middleware.gzip import GZipMiddleware
@@ -35,7 +35,7 @@ class ColoredFormatter(logging.Formatter):
 handler = logging.StreamHandler(sys.stdout)
 handler.setFormatter(ColoredFormatter("%(levelname)s:     %(message)s"))
 logging.basicConfig(level=logging.INFO, handlers=[handler])
-log = logging.getLogger()
+log = logging.getLogger(__name__)
 
 users: dict[str, str] = {}
 
@@ -80,15 +80,11 @@ def get_username(request: Request) -> str:
         raise HTTPException(401, "Invalid credentials")
     username, password = credentials.split(":", 1)
 
-    stored_hash = users.get(username)
-
-    if stored_hash is None:
-        raise HTTPException(401, "Invalid credentials")
-
-    if not bcrypt.checkpw(password.encode("utf-8"), stored_hash.encode("utf-8")):
+    if users.get(username) != password:
         raise HTTPException(401, "Invalid credentials")
 
     return username
+
 
 def validate_content_type(request: Request, starts: str) -> None:
     """Raise **HTTP 415** if Content-Type doesn't start with `starts`"""
@@ -152,7 +148,7 @@ async def register(request: Request):
     if users.get(username) is not None:
         raise HTTPException(409, "Name not available")
 
-    users[username] = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    users[username] = password
     init_db(username)
 
     return Response(status_code=201)
@@ -170,7 +166,7 @@ async def change_password(request: Request):
     except Exception as e:
         raise HTTPException(422, "New password is unacceptable") from e
 
-    users[username] = bcrypt.hashpw(content.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    users[username] = content
 
     return Response(status_code=204)
 
@@ -198,11 +194,8 @@ if __name__ == "__main__":
             if ":" not in line:
                 log.warning("Malformed line (no colon): %s", line)
                 continue
-            maybe_name, maybe_hash = line.split(":", 1)
-            if not maybe_hash.startswith("$2"):
-                log.warning("Malformed line (not bcrypted): %s", line)
-            else:
-                users[maybe_name] = maybe_hash
+            maybe_name, hopefully_password = line.split(":", 1)
+            users[maybe_name] = hopefully_password
     except FileNotFoundError:
         log.warning("data/users.txt doesn't exist. New server?")
 
@@ -214,17 +207,13 @@ if __name__ == "__main__":
         if len(sys.argv) > 2:
             log.info("Extra arguments are ignored")
         uvicorn.run(
-            app,
-            host="0.0.0.0",
-            port=80,
-            timeout_keep_alive=10
+            app, host="0.0.0.0", port=80,
+            timeout_keep_alive=20
         )
     elif sys.argv[1] == "https":
         if len(sys.argv) == 2:
             log.fatal("Domain not specified.")
             sys.exit(1)
-        if len(sys.argv) > 3:
-            log.info("Extra arguments are ignored.")
 
         domain = sys.argv[2]
 
@@ -232,12 +221,10 @@ if __name__ == "__main__":
             log.fatal("SSL certificate is required. See README.md.")
 
         uvicorn.run(
-            app,
-            host="0.0.0.0",
-            port=443,
+            app, host="0.0.0.0", port=443,
             ssl_certfile=f"/etc/letsencrypt/live/{domain}/fullchain.pem",
             ssl_keyfile=f"/etc/letsencrypt/live/{domain}/privkey.pem",
-            timeout_keep_alive=10
+            timeout_keep_alive=20
         )
     else:
         log.fatal("Unsupported protocol - choose http or https")
