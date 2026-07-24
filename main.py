@@ -3,18 +3,19 @@
 
 import sqlite3
 import json
-import os
 import logging
-import sys
 import re
+import os
+import sys
+from uuid import uuid4
+from datetime import datetime
 from base64 import b64encode, b64decode
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Response, Request
+from fastapi import FastAPI, HTTPException, Response, Request, Query
 from fastapi.middleware.gzip import GZipMiddleware
 from slowapi import Limiter
 from slowapi.util import get_remote_address
-
 
 class ColoredFormatter(logging.Formatter):
     """Formatter matching FastAPI logs"""
@@ -39,18 +40,19 @@ log = logging.getLogger(__name__)
 
 users: dict[str, str] = {}
 
-def db_exec(query: str, username: str) -> list[dict]:
+
+def db_exec(query: str, username: str, *args) -> list[dict]:
     """Execute a query in data/<username>.db"""
-    conn = sqlite3.connect(f"data/{username}.db", autocommit=True)
-    conn.row_factory = sqlite3.Row
-    with conn:
+    with sqlite3.connect(f"data/{username}.db", autocommit=True) as conn:
+        conn.execute("PRAGMA busy_timeout = 2000") # wait up to 2s if database is locked
+        conn.row_factory = sqlite3.Row
         fetched = None
-        for _ in range(0, 3):
-            try:
-                fetched = conn.execute(query).fetchall()
-            except sqlite3.OperationalError:
-                continue
-        return [dict(row) for row in fetched] if fetched else []
+        try:
+            fetched = conn.execute(query, args).fetchall()
+            return [dict(row) for row in fetched] if fetched else []
+        except Exception as e:
+            log.error("Database operatrion failed for %s: %s", username, e)
+            raise HTTPException(500, "Something is really wrong") from e
 
 
 def init_db(username: str) -> None:
@@ -58,15 +60,17 @@ def init_db(username: str) -> None:
     db_exec("""
         CREATE TABLE IF NOT EXISTS items (
             id TEXT PRIMARY KEY,
+            timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
             type TEXT NOT NULL,
             name TEXT NOT NULL,
             content BLOB NOT NULL
         )""", username)
 
+
 def get_username(request: Request) -> str:
     """
     Validate the credentials and return username.
-    Raises HTTP 401 if malformed or invalid password.
+    Raises **HTTP 401** if malformed or invalid password.
     """
     credentials = request.headers.get("Authorization")
     try:
@@ -92,41 +96,169 @@ def validate_content_type(request: Request, starts: str) -> None:
     if content_type is None or not content_type.startswith(starts):
         raise HTTPException(415, "Invalid Content-Type header")
 
+
+def validate_item_existence(username: str, uuid: str) -> None:
+    """Raise **HTTP 404** if user has no item with given id."""
+    with sqlite3.connect(f"data/{username}.db") as conn:
+        conn.execute("PRAGMA busy_timeout = 2000") # wait up to 2s if database is locked
+        try:
+            if not conn.execute(
+                "SELECT EXISTS (SELECT 1 FROM items WHERE id = ?)", uuid
+            ).fetchone()[0]:
+                raise HTTPException(404, "No item with provided ID")
+        except Exception as e:
+            log.error("Item existence check failed for %s: %s", username, e)
+            raise HTTPException(500, "Something is really wrong") from e
+
+
 app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)
+app.add_middleware(GZipMiddleware)
 limiter = Limiter(key_func=get_remote_address)
+
 
 @app.head("/api")
 @limiter.limit("10/minute")
 async def root(request: Request): # pylint: disable=unused-argument
     """Status check endpoint"""
-    return Response(status_code=204)
+    return Response(status_code=200)
 
-@app.post("/api/query")
-@limiter.limit("90/minute")
-async def api(request: Request):
-    """Execute a text/plain SQL query, return application/json result"""
-    validate_content_type(request, "text/plain")
+
+@app.get("/api/items")
+@limiter.limit("10/minute")
+async def list_items(
+    request: Request,
+    type_filter: str | None = Query(None), name: str | None = Query(None),
+    limit: int = Query(100, ge=1, le=1000), offset: int = Query(0, ge=0),
+    altered_after: str | None = Query(None), include_content: bool = Query(False)
+    ):
+    """
+    Execute SELECT query with url-encoded parameters. Return result in application/json.
+    """
     username = get_username(request)
 
-    try:
-        content = (await request.body()).decode()
-    except UnicodeDecodeError as e:
-        raise HTTPException(400, "Malformed query") from e
+    if type_filter is not None and type_filter not in ("text", "file"):
+        raise HTTPException(400, "Invalid type parameter. Must be 'text' or 'file'.")
 
+    if altered_after is not None:
+        try:
+            datetime.strptime(altered_after, "%Y-%m-%d %H:%M:%S")
+        except ValueError as e:
+            raise HTTPException(400, "Invalid altered_after. Expected YYYY-MM-DD HH:MM:SS.") from e
+
+    content_expr = "content"
+    if not include_content:
+        content_expr = "CASE WHEN type = 'text' THEN substr(content, 1, 180) ELSE NULL END"
+
+    query = f"SELECT id, timestamp, type, name, {content_expr} AS content FROM items"
+    where_clauses = []
+    params = []
+
+    if type_filter is not None:
+        where_clauses.append("type = ?")
+        params.append(type_filter)
+    if name is not None:
+        where_clauses.append("name LIKE ? ESCAPE '\\'")
+        params.append(name)
+    if altered_after is not None:
+        where_clauses.append("timestamp >= ?")
+        params.append(altered_after)
+
+    if where_clauses:
+        query += " WHERE " + " AND ".join(where_clauses)
+
+    query += " ORDER BY timestamp DESC LIMIT ? OFFSET ?"
+    items = db_exec(query, username, *params, limit, offset)
     try:
-        result = db_exec(content, username)
-        # Convert binary to base64
-        for row in result:
-            if "content" in row.keys():
-                row["content"] = b64encode(row["content"]).decode()
-        return Response(media_type="application/json", content=json.dumps(result))
-    except sqlite3.Error as e:
-        raise HTTPException(400, "Malformed query") from e
+        for item in items:
+            if item["content"] is None:
+                item["content"] = ""
+            else:
+                item["content"] = b64encode(item["content"]).decode()
     except Exception as e:
         raise HTTPException(500, "Internal server error") from e
 
+    return Response(content=json.dumps(items), media_type="application/json", status_code=200)
+
+@app.post("/api/items")
+@limiter.limit("10/minute")
+async def create_item(request: Request):
+    """Create a new item with provided fields. Return generated ID."""
+    validate_content_type(request, "application/json")
+    username = get_username(request)
+
+    try:
+        body: dict[str, str] = await request.json()
+    except (json.JSONDecodeError, TypeError) as e:
+        raise HTTPException(400, "Malformed json") from e
+
+    if not {"type", "name", "content"}.issubset(body):
+        raise HTTPException(400, "Missing fields")
+
+    if body["type"] not in {"text", "file"}:
+        raise HTTPException(422, "Invalid item type")
+
+    try:
+        content = b64decode(body["content"])
+    except Exception as e:
+        raise HTTPException(422, "Content is not base64") from e
+
+    uuid = str(uuid4())
+
+    db_exec("INSERT INTO items (id, type, name, content) VALUES (?, ?, ?, ?)",
+            username, uuid, body["type"], body["name"], content)
+    return Response(content=uuid, status_code=200)
+
+@app.patch("/api/items/{uuid}")
+@limiter.limit("45/minute")
+async def alter_item(request: Request, uuid: str):
+    """Alter item with provided id. Change name, content or both."""
+    validate_content_type(request, "application/json")
+    username = get_username(request)
+
+    try:
+        body: dict[str, str] = await request.json()
+    except (json.JSONDecodeError, TypeError) as e:
+        raise HTTPException(400, "Malformed json") from e
+
+    fields = {}
+    if "name" in body:
+        fields["name"] = body["name"]
+    if "content" in body:
+        fields["content"] = body["content"]
+
+    if not fields:
+        raise HTTPException(400, "No changes specified")
+
+    validate_item_existence(username, uuid)
+    set_clause = ", ".join(f"{key} = ?" for key in fields)
+
+    db_exec(f"UPDATE items SET timestamp = CURRENT_TIMESTAMP, {set_clause} WHERE id = ?",
+            username, *fields.values(), uuid)
+    return Response(status_code=204)
+
+@app.delete("/api/items/{uuid}")
+@limiter.limit("30/minute")
+async def delete_item(request: Request, uuid: str):
+    """Delete item with provided id."""
+    username = get_username(request)
+    validate_item_existence(username, uuid)
+
+    db_exec("DELETE FROM items WHERE id = ?", username, uuid)
+    return Response(status_code=204)
+
+
+@app.head("/api/account/{username}")
+@limiter.limit("50/hour")
+async def check_name(request: Request, name: str): # pylint: disable=unused-argument
+    """Endpoint for checking name availability."""
+    if name in users:
+        return Response(status_code=409)
+    else:
+        return Response(status_code=200)
+
+
 @app.post("/api/account")
-@limiter.limit("4/hour")
+@limiter.limit("3/hour")
 async def register(request: Request):
     """Create a new account with given name and password"""
     auth = request.headers.get("Authorization")
@@ -150,29 +282,28 @@ async def register(request: Request):
 
     users[username] = password
     init_db(username)
-
     return Response(status_code=201)
 
+
 @app.patch("/api/account")
-@limiter.limit("4/hour")
+@limiter.limit("3/hour")
 async def change_password(request: Request):
     """Change user's password"""
     validate_content_type(request, "text/plain")
     username = get_username(request)
-    content = (await request.body()).decode()
+    password = (await request.body()).decode()
 
     try:
-        assert re.match(r"^[a-zA-Z0-9_.-]{3,100}$", content)
+        assert re.match(r"^[a-zA-Z0-9_.-]{3,100}$", password)
     except Exception as e:
         raise HTTPException(422, "New password is unacceptable") from e
 
-    users[username] = content
-
+    users[username] = password
     return Response(status_code=204)
 
 
 @app.delete("/api/account")
-@limiter.limit("3/hour")
+@limiter.limit("2/hour")
 async def delete_account(request: Request):
     """Delete an account"""
     username = get_username(request)
@@ -184,8 +315,6 @@ async def delete_account(request: Request):
 
 
 if __name__ == "__main__":
-    app.add_middleware(GZipMiddleware)
-
     os.makedirs("data", exist_ok=True)
     try:
         with open("data/users.txt", "r", encoding="utf-8") as f:
@@ -200,35 +329,26 @@ if __name__ == "__main__":
         log.warning("data/users.txt doesn't exist. New server?")
 
     if len(sys.argv) == 1:
-        log.fatal("Protocol not specified (http/https).")
+        log.fatal("Domain not specified (`http` to run withour encryption).")
         sys.exit(1)
+    if len(sys.argv) > 2:
+        log.info("Extra arguments are ignored")
 
-    if sys.argv[1] == "http":
-        if len(sys.argv) > 2:
-            log.info("Extra arguments are ignored")
+    domain = sys.argv[1]
+    if domain == "http":
         uvicorn.run(
             app, host="0.0.0.0", port=80,
             timeout_keep_alive=20
         )
-    elif sys.argv[1] == "https":
-        if len(sys.argv) == 2:
-            log.fatal("Domain not specified.")
-            sys.exit(1)
-
-        domain = sys.argv[2]
-
+    else:
         if not os.path.exists(f"/etc/letsencrypt/live/{domain}/fullchain.pem"):
             log.fatal("SSL certificate is required. See README.md.")
-
         uvicorn.run(
             app, host="0.0.0.0", port=443,
             ssl_certfile=f"/etc/letsencrypt/live/{domain}/fullchain.pem",
             ssl_keyfile=f"/etc/letsencrypt/live/{domain}/privkey.pem",
             timeout_keep_alive=20
         )
-    else:
-        log.fatal("Unsupported protocol - choose http or https")
-        sys.exit(1)
 
     with open("data/users.txt", "w", encoding="utf-8") as f:
         for user, hashed in users.items():
